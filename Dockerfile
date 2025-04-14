@@ -25,4 +25,4 @@ ENV GOOGLE_APPLICATION_CREDENTIALS="/app/maria-456618-871b8f622168.json"
 EXPOSE 8000
 
 # Comando final: inicia áudio e display virtual, respeita $PORT com fallback
-CMD ["bash", "-c", "pulseaudio --start && sleep 1 && xvfb-run --auto-servernum --server-args='-screen 0 1280x720x24' uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
