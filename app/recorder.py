@@ -52,18 +52,21 @@ def gravar_reuniao(link_reuniao_original):
             mic = page.locator('[aria-label^="Microfone"]')
             if mic.get_attribute("aria-pressed") == "true":
                 mic.click()
-        except: pass
+        except:
+            pass
 
         try:
             cam = page.locator('[aria-label^="Câmera"]')
             if cam.get_attribute("aria-pressed") == "true":
                 cam.click()
-        except: pass
+        except:
+            pass
 
         try:
             page.wait_for_selector('button:has-text("Ingressar agora")', timeout=15000)
             page.click('button:has-text("Ingressar agora")', force=True)
-        except: pass
+        except:
+            pass
 
         time.sleep(10)
         processo_ffmpeg = iniciar_gravacao(nome_arquivo)
@@ -71,12 +74,10 @@ def gravar_reuniao(link_reuniao_original):
 
         tempo_inicio = time.time()
         while True:
-            # Monitora se a aba foi fechada (ex: usuário encerrou a reunião)
             if page.is_closed():
                 print("🛑 Reunião encerrada.")
                 break
 
-            # Monitora tempo máximo
             if (time.time() - tempo_inicio) > DURACAO_MAXIMA:
                 print("⏱️ Tempo máximo atingido.")
                 break
