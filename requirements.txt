@@ -1,6 +1,5 @@
 fastapi
 uvicorn
-playwright==1.43.1
 google-cloud-storage
 google-cloud-secret-manager
 google-cloud-logging
