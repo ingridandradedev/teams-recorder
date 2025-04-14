@@ -21,8 +21,8 @@ RUN python3 -m playwright install
 # Define credenciais do Google (caso esteja embutida ou presente no projeto)
 ENV GOOGLE_APPLICATION_CREDENTIALS="/app/maria-456618-871b8f622168.json"
 
-# Expõe a porta usada pelo Uvicorn (também lida com PORT variável de ambientes como Railway)
+# Expõe a porta usada pelo Uvicorn
 EXPOSE 8000
 
-# Comando final: inicia áudio e display virtual, respeita $PORT com fallback
+# Comando final com logs e fallback para porta 8000
 CMD ["bash", "-c", "pulseaudio --start && sleep 1 && echo '✅ Pulseaudio iniciado' && echo '🚀 Iniciando Uvicorn...' && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
