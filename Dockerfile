@@ -12,17 +12,17 @@ WORKDIR /app
 # Copia o conteúdo do projeto
 COPY . .
 
-# Instala dependências do Python com override de ambiente protegido
+# Instala dependências do Python com override de ambiente protegido (PEP 668)
 RUN pip3 install --break-system-packages --no-cache-dir -r requirements.txt
 
-# Garante instalação dos navegadores do Playwright
+# Instala navegadores do Playwright para uso com Python
 RUN python3 -m playwright install
 
-# Define credenciais do Google (opcional se estiver embutido no código)
+# Define credenciais do Google (caso esteja embutida ou presente no projeto)
 ENV GOOGLE_APPLICATION_CREDENTIALS="/app/maria-456618-871b8f622168.json"
 
-# Expõe a porta da FastAPI
+# Expõe a porta usada pelo Uvicorn (também lida com PORT variável de ambientes como Railway)
 EXPOSE 8000
 
-# Comando final: inicia pulseaudio + servidor uvicorn com display virtual
-CMD ["bash", "-c", "pulseaudio --start && xvfb-run --auto-servernum --server-args='-screen 0 1280x720x24' uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+# Comando final: inicia áudio e display virtual, respeita $PORT com fallback
+CMD ["bash", "-c", "pulseaudio --start && sleep 1 && xvfb-run --auto-servernum --server-args='-screen 0 1280x720x24' uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
