@@ -19,6 +19,7 @@ def gerar_link_anonimo_direto(link_original):
     return final_url
 
 def iniciar_gravacao(nome_arquivo):
+    print(f"🎙️ Iniciando gravação com FFmpeg: {nome_arquivo}")
     comando = [
         "ffmpeg",
         "-y",
@@ -30,62 +31,77 @@ def iniciar_gravacao(nome_arquivo):
     return subprocess.Popen(comando)
 
 def gravar_reuniao(link_reuniao_original):
-    print("📡 Gravando reunião...")
+    print("📡 Iniciando processo de gravação da reunião...")
     LINK_REUNIAO = gerar_link_anonimo_direto(link_reuniao_original)
     nome_arquivo = f"gravacao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--use-fake-ui-for-media-stream"])
-        context = browser.new_context(permissions=["microphone", "camera"])
-        page = context.new_page()
-        page.goto(LINK_REUNIAO)
+    try:
+        with sync_playwright() as p:
+            print("🌐 Abrindo navegador...")
+            browser = p.chromium.launch(headless=False, args=["--use-fake-ui-for-media-stream"])
+            print("✅ Navegador iniciado.")
+            context = browser.new_context(permissions=["microphone", "camera"])
+            page = context.new_page()
 
-        try:
-            page.wait_for_selector('[data-tid="prejoin-display-name-input"]', timeout=20000)
-            page.fill('[data-tid="prejoin-display-name-input"]', NOME_USUARIO)
-        except:
-            print("❌ Nome não preenchido.")
+            print(f"🔗 Acessando o link: {LINK_REUNIAO}")
+            page.goto(LINK_REUNIAO, timeout=60000)
+            print("✅ Página carregada.")
 
-        time.sleep(2)
+            try:
+                print("⌨️ Preenchendo nome...")
+                page.wait_for_selector('[data-tid=\"prejoin-display-name-input\"]', timeout=20000)
+                page.fill('[data-tid=\"prejoin-display-name-input\"]', NOME_USUARIO)
+                print(f"✅ Nome preenchido como: {NOME_USUARIO}")
+            except Exception as e:
+                print(f"❌ Não conseguiu preencher nome: {e}")
 
-        try:
-            mic = page.locator('[aria-label^="Microfone"]')
-            if mic.get_attribute("aria-pressed") == "true":
-                mic.click()
-        except:
-            pass
+            time.sleep(2)
 
-        try:
-            cam = page.locator('[aria-label^="Câmera"]')
-            if cam.get_attribute("aria-pressed") == "true":
-                cam.click()
-        except:
-            pass
+            try:
+                print("🔇 Desativando microfone...")
+                mic = page.locator('[aria-label^=\"Microfone\"]')
+                if mic.get_attribute("aria-pressed") == "true":
+                    mic.click()
+                    print("✅ Microfone desativado.")
+            except Exception as e:
+                print(f"❌ Erro ao desativar microfone: {e}")
 
-        try:
-            page.wait_for_selector('button:has-text("Ingressar agora")', timeout=15000)
-            page.click('button:has-text("Ingressar agora")', force=True)
-        except:
-            pass
+            try:
+                print("📷 Desativando câmera...")
+                cam = page.locator('[aria-label^=\"Câmera\"]')
+                if cam.get_attribute("aria-pressed") == "true":
+                    cam.click()
+                    print("✅ Câmera desativada.")
+            except Exception as e:
+                print(f"❌ Erro ao desativar câmera: {e}")
 
-        time.sleep(10)
-        processo_ffmpeg = iniciar_gravacao(nome_arquivo)
-        print(f"🎙️ Gravando em {nome_arquivo}...")
+            try:
+                print("🚪 Clicando em 'Ingressar agora'...")
+                page.wait_for_selector('button:has-text(\"Ingressar agora\")', timeout=20000)
+                page.click('button:has-text(\"Ingressar agora\")', force=True)
+                print("✅ Ingressou na reunião.")
+            except Exception as e:
+                print(f"❌ Erro ao ingressar na reunião: {e}")
 
-        tempo_inicio = time.time()
-        while True:
-            if page.is_closed():
-                print("🛑 Reunião encerrada.")
-                break
+            time.sleep(10)
+            processo_ffmpeg = iniciar_gravacao(nome_arquivo)
 
-            if (time.time() - tempo_inicio) > DURACAO_MAXIMA:
-                print("⏱️ Tempo máximo atingido.")
-                break
+            tempo_inicio = time.time()
+            while True:
+                if page.is_closed():
+                    print("🛑 A aba foi fechada. Encerrando gravação.")
+                    break
+                if (time.time() - tempo_inicio) > DURACAO_MAXIMA:
+                    print("⏱️ Tempo máximo de gravação atingido.")
+                    break
+                print("🎧 Gravando...")
+                time.sleep(5)
 
-            time.sleep(5)
-
-        processo_ffmpeg.terminate()
-        browser.close()
-        print("✅ Finalizando e enviando para o bucket...")
-        url = enviar_para_gcs(nome_arquivo)
-        return {"status": "finalizado", "arquivo": nome_arquivo, "url_bucket": url}
+            processo_ffmpeg.terminate()
+            browser.close()
+            print("📤 Enviando para o Google Cloud Storage...")
+            url = enviar_para_gcs(nome_arquivo)
+            return {"status": "finalizado", "arquivo": nome_arquivo, "url_bucket": url}
+    except Exception as e:
+        print(f"❌ Erro geral no processo: {e}")
+        return {"status": "erro", "detalhes": str(e)}
