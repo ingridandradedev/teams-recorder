@@ -37,7 +37,7 @@ def tirar_screenshot(page, etapa):
     print(f"📸 Screenshot salva: {screenshot_path}")
 
 def gravar_reuniao(link_reuniao_original):
-    print("📡 Iniciando processo de gravação da reunião. Versão 1.1")
+    print("📡 Iniciando processo de gravação da reunião. Versão 1.2")
     LINK_REUNIAO = gerar_link_anonimo_direto(link_reuniao_original)
     nome_arquivo = f"gravacao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
 
