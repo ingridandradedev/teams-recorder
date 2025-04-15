@@ -1,15 +1,18 @@
 from google.cloud import storage
+from google.oauth2 import service_account
 from datetime import timedelta
 import os
 
 BUCKET_NAME = "maria-1-0-pecege"
+CREDENTIALS_PATH = os.path.join(os.path.dirname(__file__), "maria-456618-871b8f622168.json")
 
 def enviar_para_gcs(nome_arquivo: str) -> str:
     print("📤 Iniciando upload para o Google Cloud Storage...")
 
     try:
-        # Inicializa o cliente do Google Cloud Storage
-        storage_client = storage.Client()
+        # Carrega as credenciais do arquivo JSON
+        credentials = service_account.Credentials.from_service_account_file(CREDENTIALS_PATH)
+        storage_client = storage.Client(credentials=credentials)
         bucket = storage_client.bucket(BUCKET_NAME)
         blob = bucket.blob(nome_arquivo)
 
