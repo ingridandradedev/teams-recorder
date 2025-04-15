@@ -20,7 +20,7 @@ CREDENCIAL_EMBUTIDA = {
 }
 
 def enviar_para_gcs(nome_arquivo: str) -> str:
-    print("📤 Enviando para o Google Cloud Storage...")
+    print("📤 Iniciando upload para o Google Cloud Storage...")
 
     cred_path = "embedded-gcp-credentials.json"
     with open(cred_path, "w") as f:
@@ -28,11 +28,17 @@ def enviar_para_gcs(nome_arquivo: str) -> str:
 
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = cred_path
 
-    storage_client = storage.Client()
-    bucket = storage_client.bucket(BUCKET_NAME)
-    blob = bucket.blob(f"{PASTA}/{nome_arquivo}")
-    blob.upload_from_filename(nome_arquivo)
-    blob.make_public()
-
-    print(f"✅ Arquivo disponível em: {blob.public_url}")
-    return blob.public_url
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(f"{PASTA}/{nome_arquivo}")
+        print(f"🔄 Fazendo upload do arquivo: {nome_arquivo}")
+        blob.upload_from_filename(nome_arquivo)
+        blob.make_public()
+        print(f"✅ Upload concluído. Arquivo disponível em: {blob.public_url}")
+        return blob.public_url
+    except Exception as e:
+        print(f"❌ Erro durante o upload para o Google Cloud Storage: {e}")
+        raise
+    finally:
+        os.remove(cred_path)

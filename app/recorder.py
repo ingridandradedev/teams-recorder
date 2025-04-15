@@ -93,7 +93,7 @@ def gravar_reuniao(link_reuniao_original):
                     print("⏱️ Tempo máximo de gravação atingido.")
                     break
                 try:
-                    if not page.locator('div:has-text("Você foi removido da reunião")').is_hidden():
+                    if page.locator('div:has-text("Você foi removido da reunião")').is_visible():
                         print("❌ Bot foi removido da reunião. Encerrando gravação.")
                         tirar_screenshot(page, "removido_reuniao")
                         break
@@ -106,6 +106,7 @@ def gravar_reuniao(link_reuniao_original):
             browser.close()
             print("📤 Enviando para o Google Cloud Storage...")
             url = enviar_para_gcs(nome_arquivo)
+            print(f"✅ Gravação enviada para o Google Cloud Storage: {url}")
             return {"status": "finalizado", "arquivo": nome_arquivo, "url_bucket": url}
     except Exception as e:
         print(f"❌ Erro geral no processo: {e}")
