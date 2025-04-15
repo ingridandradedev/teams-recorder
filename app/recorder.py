@@ -5,7 +5,7 @@ from playwright.sync_api import sync_playwright
 from app.uploader import enviar_para_gcs
 
 NOME_USUARIO = "GravadorBot"
-DURACAO_MAXIMA = 30  # segundos (alterado para 30 segundos para teste)
+DURACAO_MAXIMA = 10800  # 3 horas em segundos
 DISPOSITIVO_AUDIO = "default"
 
 def gerar_link_anonimo_direto(link_original):
@@ -36,8 +36,31 @@ def tirar_screenshot(page, etapa):
     page.screenshot(path=screenshot_path)
     print(f"📸 Screenshot salva: {screenshot_path}")
 
+def verificar_condicoes_encerramento(page):
+    try:
+        # Verifica se o bot foi removido da reunião
+        if page.is_visible("text='Você foi removido desta reunião'"):
+            print("❌ Bot foi removido da reunião.")
+            return True
+
+        # Verifica se a reunião foi encerrada para todos
+        if page.is_visible("text='As reuniões são apenas uma de nossas ferramentas.'"):
+            print("❌ Reunião encerrada para todos.")
+            return True
+
+        # Verifica se o bot está sozinho na reunião
+        participantes = page.locator('[data-tid="toolbar-item-badge"]').inner_text()
+        if participantes == "1":
+            print("❌ Bot está sozinho na reunião.")
+            return True
+
+    except Exception as e:
+        print(f"⚠️ Erro ao verificar condições de encerramento: {e}")
+
+    return False
+
 def gravar_reuniao(link_reuniao_original):
-    print("📡 Iniciando processo de gravação da reunião. Versão 1.3")
+    print("📡 Iniciando processo de gravação da reunião. Versão 1.4")
     LINK_REUNIAO = gerar_link_anonimo_direto(link_reuniao_original)
     nome_arquivo = f"gravacao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
 
@@ -91,6 +114,9 @@ def gravar_reuniao(link_reuniao_original):
                     break
                 if (time.time() - tempo_inicio) > DURACAO_MAXIMA:
                     print("⏱️ Tempo máximo de gravação atingido. Encerrando gravação.")
+                    break
+                if verificar_condicoes_encerramento(page):
+                    print("❌ Condição de encerramento atendida. Encerrando gravação.")
                     break
                 print("🎧 Gravando...")
                 time.sleep(5)
