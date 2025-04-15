@@ -30,6 +30,12 @@ def iniciar_gravacao(nome_arquivo):
     ]
     return subprocess.Popen(comando)
 
+def tirar_screenshot(page, etapa):
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    screenshot_path = f"screenshot_{etapa}_{timestamp}.png"
+    page.screenshot(path=screenshot_path)
+    print(f"📸 Screenshot salva: {screenshot_path}")
+
 def gravar_reuniao(link_reuniao_original):
     print("📡 Iniciando processo de gravação da reunião...")
     LINK_REUNIAO = gerar_link_anonimo_direto(link_reuniao_original)
@@ -45,12 +51,14 @@ def gravar_reuniao(link_reuniao_original):
 
             print(f"🔗 Acessando o link: {LINK_REUNIAO}")
             page.goto(LINK_REUNIAO, timeout=60000)
+            tirar_screenshot(page, "pagina_carregada")
             print("✅ Página carregada.")
 
             try:
                 print("⌨️ Preenchendo nome...")
-                page.wait_for_selector('[data-tid=\"prejoin-display-name-input\"]', timeout=20000)
-                page.fill('[data-tid=\"prejoin-display-name-input\"]', NOME_USUARIO)
+                page.wait_for_selector('[data-tid="prejoin-display-name-input"]', timeout=20000)
+                page.fill('[data-tid="prejoin-display-name-input"]', NOME_USUARIO)
+                tirar_screenshot(page, "nome_preenchido")
                 print(f"✅ Nome preenchido como: {NOME_USUARIO}")
             except Exception as e:
                 print(f"❌ Não conseguiu preencher nome: {e}")
@@ -59,29 +67,33 @@ def gravar_reuniao(link_reuniao_original):
 
             try:
                 print("🔇 Desativando microfone...")
-                mic = page.locator('[aria-label^=\"Microfone\"]')
+                mic = page.locator('[aria-label^="Microfone"]')
                 if mic.get_attribute("aria-pressed") == "true":
                     mic.click()
+                    tirar_screenshot(page, "microfone_desativado")
                     print("✅ Microfone desativado.")
             except Exception as e:
                 print(f"❌ Erro ao desativar microfone: {e}")
 
             try:
                 print("📷 Desativando câmera...")
-                cam = page.locator('[aria-label^=\"Câmera\"]')
+                cam = page.locator('[aria-label^="Câmera"]')
                 if cam.get_attribute("aria-pressed") == "true":
                     cam.click()
+                    tirar_screenshot(page, "camera_desativada")
                     print("✅ Câmera desativada.")
             except Exception as e:
                 print(f"❌ Erro ao desativar câmera: {e}")
 
             try:
                 print("🚪 Clicando em 'Ingressar agora'...")
-                page.wait_for_selector('button:has-text(\"Ingressar agora\")', timeout=20000)
-                page.click('button:has-text(\"Ingressar agora\")', force=True)
+                page.wait_for_selector('button:has-text("Ingressar agora")', timeout=20000)
+                page.click('button:has-text("Ingressar agora")', force=True)
+                tirar_screenshot(page, "ingressar_agora")
                 print("✅ Ingressou na reunião.")
             except Exception as e:
                 print(f"❌ Erro ao ingressar na reunião: {e}")
+                tirar_screenshot(page, "erro_ingressar")
 
             time.sleep(10)
             processo_ffmpeg = iniciar_gravacao(nome_arquivo)
@@ -94,6 +106,13 @@ def gravar_reuniao(link_reuniao_original):
                 if (time.time() - tempo_inicio) > DURACAO_MAXIMA:
                     print("⏱️ Tempo máximo de gravação atingido.")
                     break
+                try:
+                    if not page.locator('div:has-text("Você foi removido da reunião")').is_hidden():
+                        print("❌ Bot foi removido da reunião. Encerrando gravação.")
+                        tirar_screenshot(page, "removido_reuniao")
+                        break
+                except Exception:
+                    pass
                 print("🎧 Gravando...")
                 time.sleep(5)
 
