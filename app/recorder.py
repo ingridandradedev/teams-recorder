@@ -50,8 +50,8 @@ def gravar_reuniao(link_reuniao_original):
             # Configurando o idioma para português
             context = browser.new_context(
                 permissions=["microphone", "camera"],
-                locale="pt-BR",  # Define o idioma como português do Brasil
-                extra_http_headers={"Accept-Language": "pt-BR"}  # Cabeçalho para idioma
+                locale="pt-BR",
+                extra_http_headers={"Accept-Language": "pt-BR"}
             )
             page = context.new_page()
 
