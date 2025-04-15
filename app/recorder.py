@@ -5,7 +5,7 @@ from playwright.sync_api import sync_playwright
 from app.uploader import enviar_para_gcs
 
 NOME_USUARIO = "GravadorBot"
-DURACAO_MAXIMA = 60 * 10  # segundos
+DURACAO_MAXIMA = 30  # segundos (alterado para 30 segundos para teste)
 DISPOSITIVO_AUDIO = "default"
 
 def gerar_link_anonimo_direto(link_original):
@@ -37,7 +37,7 @@ def tirar_screenshot(page, etapa):
     print(f"📸 Screenshot salva: {screenshot_path}")
 
 def gravar_reuniao(link_reuniao_original):
-    print("📡 Iniciando processo de gravação da reunião...")
+    print("📡 Iniciando processo de gravação da reunião. Versão 1.0")
     LINK_REUNIAO = gerar_link_anonimo_direto(link_reuniao_original)
     nome_arquivo = f"gravacao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
 
@@ -90,15 +90,8 @@ def gravar_reuniao(link_reuniao_original):
                     print("🛑 A aba foi fechada. Encerrando gravação.")
                     break
                 if (time.time() - tempo_inicio) > DURACAO_MAXIMA:
-                    print("⏱️ Tempo máximo de gravação atingido.")
+                    print("⏱️ Tempo máximo de gravação atingido. Encerrando gravação.")
                     break
-                try:
-                    if page.locator('div:has-text("Você foi removido da reunião")').is_visible():
-                        print("❌ Bot foi removido da reunião. Encerrando gravação.")
-                        tirar_screenshot(page, "removido_reuniao")
-                        break
-                except Exception:
-                    pass
                 print("🎧 Gravando...")
                 time.sleep(5)
 
