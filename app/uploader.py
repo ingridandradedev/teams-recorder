@@ -19,7 +19,7 @@ def enviar_para_gcs(nome_arquivo: str) -> str:
 
         # Gera uma URL assinada válida por 1 hora usando o método V4
         url_assinada = blob.generate_signed_url(
-            version="v4",
+            version="v4",  # Use a versão 4 do método de URL assinada
             expiration=timedelta(hours=1),
             method="GET"
         )
