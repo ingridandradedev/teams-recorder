@@ -46,7 +46,13 @@ def gravar_reuniao(link_reuniao_original):
             print("🌐 Abrindo navegador...")
             browser = p.chromium.launch(headless=False, args=["--use-fake-ui-for-media-stream"])
             print("✅ Navegador iniciado.")
-            context = browser.new_context(permissions=["microphone", "camera"])
+            
+            # Configurando o idioma para português
+            context = browser.new_context(
+                permissions=["microphone", "camera"],
+                locale="pt-BR",  # Define o idioma como português do Brasil
+                extra_http_headers={"Accept-Language": "pt-BR"}  # Cabeçalho para idioma
+            )
             page = context.new_page()
 
             print(f"🔗 Acessando o link: {LINK_REUNIAO}")
@@ -64,26 +70,6 @@ def gravar_reuniao(link_reuniao_original):
                 print(f"❌ Não conseguiu preencher nome: {e}")
 
             time.sleep(2)
-
-            try:
-                print("🔇 Desativando microfone...")
-                mic = page.locator('[aria-label^="Microfone"]')
-                if mic.get_attribute("aria-pressed") == "true":
-                    mic.click()
-                    tirar_screenshot(page, "microfone_desativado")
-                    print("✅ Microfone desativado.")
-            except Exception as e:
-                print(f"❌ Erro ao desativar microfone: {e}")
-
-            try:
-                print("📷 Desativando câmera...")
-                cam = page.locator('[aria-label^="Câmera"]')
-                if cam.get_attribute("aria-pressed") == "true":
-                    cam.click()
-                    tirar_screenshot(page, "camera_desativada")
-                    print("✅ Câmera desativada.")
-            except Exception as e:
-                print(f"❌ Erro ao desativar câmera: {e}")
 
             try:
                 print("🚪 Clicando em 'Ingressar agora'...")
