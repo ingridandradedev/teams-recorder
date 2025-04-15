@@ -60,7 +60,7 @@ def verificar_condicoes_encerramento(page):
     return False
 
 def gravar_reuniao(link_reuniao_original):
-    print("📡 Iniciando processo de gravação da reunião. Versão 1.4")
+    print("📡 Iniciando processo de gravação da reunião. Versão 1.5")
     LINK_REUNIAO = gerar_link_anonimo_direto(link_reuniao_original)
     nome_arquivo = f"gravacao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
 
