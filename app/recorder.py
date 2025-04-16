@@ -4,7 +4,7 @@ from datetime import datetime
 from playwright.sync_api import sync_playwright
 from app.uploader import enviar_para_gcs
 
-NOME_USUARIO = "GravadorBot"
+NOME_USUARIO = "MarIA"
 DURACAO_MAXIMA = 10800  # 3 horas em segundos
 DISPOSITIVO_AUDIO = "default"
 
