@@ -60,7 +60,7 @@ def verificar_condicoes_encerramento(page):
     return False
 
 def gravar_reuniao(link_reuniao_original):
-    print("📡 Iniciando processo de gravação da reunião. Versão 1.5")
+    print("📡 Iniciando processo de gravação da reunião. Versão 1.6")
     LINK_REUNIAO = gerar_link_anonimo_direto(link_reuniao_original)
     nome_arquivo = f"gravacao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
 
@@ -99,10 +99,19 @@ def gravar_reuniao(link_reuniao_original):
                 page.wait_for_selector('button:has-text("Ingressar agora")', timeout=20000)
                 page.click('button:has-text("Ingressar agora")', force=True)
                 tirar_screenshot(page, "ingressar_agora")
-                print("✅ Ingressou na reunião.")
+                print("✅ Tentando ingressar na reunião.")
             except Exception as e:
                 print(f"❌ Erro ao ingressar na reunião: {e}")
                 tirar_screenshot(page, "erro_ingressar")
+
+            # Aguarda até que o bot seja aceito na reunião
+            print("⏳ Aguardando aceitação na reunião...")
+            while True:
+                if not page.is_visible("text='Oi, GravadorBot! Aguarde até que o organizador permita que você entre.'"):
+                    print("✅ Bot aceito na reunião. Iniciando gravação.")
+                    break
+                print("⌛ Ainda aguardando aceitação...")
+                time.sleep(5)
 
             time.sleep(10)
             processo_ffmpeg = iniciar_gravacao(nome_arquivo)
