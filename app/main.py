@@ -6,7 +6,8 @@ import concurrent.futures
 
 app = FastAPI(title="Teams Recorder API")
 
-executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+# Aumente o número de threads para permitir várias requisições simultâneas
+executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)  # Permite até 5 chamadas simultâneas
 
 @app.get("/gravar")
 async def iniciar_gravacao(url: str = Query(..., description="URL da reunião do Teams")):
