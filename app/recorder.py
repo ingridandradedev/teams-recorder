@@ -4,7 +4,7 @@ from datetime import datetime
 from playwright.sync_api import sync_playwright
 from app.uploader import enviar_para_gcs
 
-NOME_USUARIO = "GravadorBot"
+NOME_USUARIO = "MarIA"  # Alterado de "GravadorBot" para "MarIA"
 DURACAO_MAXIMA = 10800  # 3 horas em segundos
 DISPOSITIVO_AUDIO = "default"
 
@@ -107,7 +107,7 @@ def gravar_reuniao(link_reuniao_original):
             # Aguarda até que o bot seja aceito na reunião
             print("⏳ Aguardando aceitação na reunião...")
             while True:
-                if not page.is_visible("text='Oi, GravadorBot! Aguarde até que o organizador permita que você entre.'"):
+                if not page.is_visible("text='Oi, MarIA! Aguarde até que o organizador permita que você entre.'"):
                     print("✅ Bot aceito na reunião. Iniciando gravação.")
                     break
                 print("⌛ Ainda aguardando aceitação...")
