@@ -17,6 +17,10 @@ COPY . /app
 # Instale as dependências do Python
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Crie um usuário não-root para executar a aplicação
+RUN useradd -m appuser
+USER appuser
+
 # Exponha a porta 8000 para a API
 EXPOSE 8000
 
