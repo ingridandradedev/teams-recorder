@@ -1,5 +1,5 @@
 # Use a imagem oficial do Playwright com navegadores instalados
-FROM mcr.microsoft.com/playwright/python:v1.36.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.51.0-jammy
 
 # Instale pacotes adicionais necessários para áudio e gráficos
 RUN apt-get update && apt-get install -y \

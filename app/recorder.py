@@ -67,7 +67,7 @@ def gravar_reuniao(link_reuniao_original):
     try:
         with sync_playwright() as p:
             print("🌐 Abrindo navegador...")
-            browser = p.chromium.launch(headless=False, args=["--use-fake-ui-for-media-stream"])
+            browser = p.chromium.launch(headless=True, args=["--use-fake-ui-for-media-stream"])
             print("✅ Navegador iniciado.")
             
             # Configurando o idioma para português
