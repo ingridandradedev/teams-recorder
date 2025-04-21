@@ -11,8 +11,9 @@ RUN apt-get update && apt-get install -y \
 # Defina o diretório de trabalho dentro do container
 WORKDIR /app
 
-# Copie os arquivos do projeto para o container
+# Copie os arquivos do projeto para o container e ajuste o dono
 COPY . /app
+RUN chown -R appuser:appuser /app
 
 # Instale as dependências do Python
 RUN pip install --no-cache-dir -r requirements.txt
