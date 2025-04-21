@@ -8,7 +8,8 @@ BUCKET_NAME = "maria-1-0-pecege"
 # carrega JSON das credenciais via env var
 CRED_JSON = os.getenv("GCP_SERVICE_ACCOUNT_JSON")
 
-def enviar_para_gcs(nome_arquivo: str) -> str:
+def enviar_para_gcs(caminho_arquivo: str, blob_name: str = None) -> str:
+    blob_name = blob_name or os.path.basename(caminho_arquivo)
     print("📤 Iniciando upload para o Google Cloud Storage...")
     try:
         if CRED_JSON:
@@ -19,10 +20,10 @@ def enviar_para_gcs(nome_arquivo: str) -> str:
             # fallback para ADC (se configurado)
             client = storage.Client()
         bucket = client.bucket(BUCKET_NAME)
-        blob = bucket.blob(nome_arquivo)
+        blob = bucket.blob(blob_name)
 
-        print(f"🔄 Fazendo upload do arquivo: {nome_arquivo}")
-        blob.upload_from_filename(nome_arquivo)
+        print(f"🔄 Fazendo upload do arquivo: {caminho_arquivo}")
+        blob.upload_from_filename(caminho_arquivo)
 
         url_assinada = blob.generate_signed_url(
             version="v4",

@@ -16,6 +16,7 @@ RUN useradd -m appuser
 
 # Copie o código e ajuste dono para o appuser
 COPY . /app
+RUN mkdir -p /app/gravacoes && chown -R appuser:appuser /app/gravacoes
 RUN chown -R appuser:appuser /app
 
 # Instale as dependências do Python (ainda como root)

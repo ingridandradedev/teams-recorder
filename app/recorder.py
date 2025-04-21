@@ -3,10 +3,12 @@ import time
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 from app.uploader import enviar_para_gcs
+import os
 
 NOME_USUARIO = "MarIA"  # Alterado de "GravadorBot" para "MarIA"
 DURACAO_MAXIMA = 10800  # 3 horas em segundos
 DISPOSITIVO_AUDIO = "default"
+RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", "/app/gravacoes")
 
 def gerar_link_anonimo_direto(link_original):
     base = "https://teams.microsoft.com"
@@ -18,15 +20,15 @@ def gerar_link_anonimo_direto(link_original):
         final_url += "&deeplinkId=joinweb"
     return final_url
 
-def iniciar_gravacao(nome_arquivo):
-    print(f"🎙️ Iniciando gravação com FFmpeg: {nome_arquivo}")
+def iniciar_gravacao(caminho_arquivo):
+    print(f"🎙️ Iniciando gravação com FFmpeg: {caminho_arquivo}")
     comando = [
         "ffmpeg",
         "-y",
         "-f", "pulse",
         "-i", DISPOSITIVO_AUDIO,
         "-acodec", "libmp3lame",
-        nome_arquivo
+        caminho_arquivo
     ]
     return subprocess.Popen(comando)
 
@@ -62,7 +64,11 @@ def verificar_condicoes_encerramento(page):
 def gravar_reuniao(link_reuniao_original):
     print("📡 Iniciando processo de gravação da reunião. Versão 1.6")
     LINK_REUNIAO = gerar_link_anonimo_direto(link_reuniao_original)
-    nome_arquivo = f"gravacao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
+
+    os.makedirs(RECORDINGS_DIR, exist_ok=True)
+
+    filename = f"gravacao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
+    full_path = os.path.join(RECORDINGS_DIR, filename)
 
     try:
         with sync_playwright() as p:
@@ -114,7 +120,7 @@ def gravar_reuniao(link_reuniao_original):
                 time.sleep(5)
 
             time.sleep(10)
-            processo_ffmpeg = iniciar_gravacao(nome_arquivo)
+            processo_ffmpeg = iniciar_gravacao(full_path)
 
             tempo_inicio = time.time()
             while True:
@@ -133,9 +139,9 @@ def gravar_reuniao(link_reuniao_original):
             processo_ffmpeg.terminate()
             browser.close()
             print("📤 Enviando para o Google Cloud Storage...")
-            url = enviar_para_gcs(nome_arquivo)
+            url = enviar_para_gcs(full_path, blob_name=filename)
             print(f"✅ Gravação enviada para o Google Cloud Storage: {url}")
-            return {"status": "finalizado", "arquivo": nome_arquivo, "url_bucket": url}
+            return {"status": "finalizado", "arquivo": filename, "url_bucket": url}
     except Exception as e:
         print(f"❌ Erro geral no processo: {e}")
         return {"status": "erro", "detalhes": str(e)}
