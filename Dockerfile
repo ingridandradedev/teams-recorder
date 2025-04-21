@@ -6,20 +6,22 @@ RUN apt-get update && apt-get install -y \
     pulseaudio \
     xvfb \
     ffmpeg \
-    && apt-get clean
+  && apt-get clean
 
 # Defina o diretório de trabalho dentro do container
 WORKDIR /app
 
-# Copie os arquivos do projeto para o container e ajuste o dono
+# Crie um usuário não-root antes de copiar / ajustar permissões
+RUN useradd -m appuser
+
+# Copie o código e ajuste dono para o appuser
 COPY . /app
 RUN chown -R appuser:appuser /app
 
-# Instale as dependências do Python
+# Instale as dependências do Python (ainda como root)
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Crie um usuário não-root para executar a aplicação
-RUN useradd -m appuser
+# Passe a executar como appuser
 USER appuser
 
 # Exponha a porta 8000 para a API
