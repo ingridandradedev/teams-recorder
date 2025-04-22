@@ -7,7 +7,24 @@ import os
 
 NOME_USUARIO = "MarIA"  # Alterado de "GravadorBot" para "MarIA"
 DURACAO_MAXIMA = 10800  # 3 horas em segundos
-DISPOSITIVO_AUDIO = "default.monitor"
+
+def detectar_monitor_pulse() -> str:
+    """
+    Retorna o primeiro source que termina em '.monitor' via pactl
+    """
+    res = subprocess.run(
+        ["pactl", "list", "short", "sources"],
+        capture_output=True, text=True, check=True
+    )
+    for linha in res.stdout.splitlines():
+        # formato: idx    nome.do.source    …
+        nome = linha.split()[1]
+        if nome.endswith(".monitor"):
+            return nome
+    raise RuntimeError("Nenhum dispositivo '.monitor' encontrado em pactl")
+
+# Substitua DISPOSITIVO_AUDIO por:
+DISPOSITIVO_AUDIO = detectar_monitor_pulse()
 
 def gerar_link_anonimo_direto(link_original):
     base = "https://teams.microsoft.com"
@@ -21,6 +38,7 @@ def gerar_link_anonimo_direto(link_original):
 
 def iniciar_gravacao(caminho_arquivo):
     print(f"🎙️ Iniciando gravação com FFmpeg: {caminho_arquivo}")
+    print(f"🔊 Usando dispositivo de áudio: {DISPOSITIVO_AUDIO}")
     comando = [
         "ffmpeg",
         "-y",
