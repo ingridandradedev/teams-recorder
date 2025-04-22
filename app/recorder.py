@@ -5,8 +5,9 @@ from playwright.sync_api import sync_playwright
 from app.uploader import enviar_para_gcs
 import os
 
-NOME_USUARIO = "MarIA"  # Alterado de "GravadorBot" para "MarIA"
+NOME_USUARIO = "GravadorBot"  # Nome do bot
 DURACAO_MAXIMA = 10800  # 3 horas em segundos
+DISPOSITIVO_AUDIO = "default"  # Dispositivo de áudio padrão
 
 def detectar_monitor_pulse() -> str:
     """
@@ -23,9 +24,6 @@ def detectar_monitor_pulse() -> str:
             return nome
     raise RuntimeError("Nenhum dispositivo '.monitor' encontrado em pactl")
 
-# Substitua DISPOSITIVO_AUDIO por:
-DISPOSITIVO_AUDIO = detectar_monitor_pulse()
-
 def gerar_link_anonimo_direto(link_original):
     base = "https://teams.microsoft.com"
     path = link_original.replace(base, "")
@@ -36,16 +34,15 @@ def gerar_link_anonimo_direto(link_original):
         final_url += "&deeplinkId=joinweb"
     return final_url
 
-def iniciar_gravacao(caminho_arquivo):
-    print(f"🎙️ Iniciando gravação com FFmpeg: {caminho_arquivo}")
-    print(f"🔊 Usando dispositivo de áudio: {DISPOSITIVO_AUDIO}")
+def iniciar_gravacao(nome_arquivo):
+    print(f"🎙️ Iniciando gravação com FFmpeg: {nome_arquivo}")
     comando = [
         "ffmpeg",
         "-y",
         "-f", "pulse",
         "-i", DISPOSITIVO_AUDIO,
         "-acodec", "libmp3lame",
-        caminho_arquivo
+        nome_arquivo
     ]
     return subprocess.Popen(comando)
 
@@ -57,32 +54,24 @@ def tirar_screenshot(page, etapa):
 
 def verificar_condicoes_encerramento(page):
     try:
-        # Verifica se o bot foi removido da reunião
         if page.is_visible("text='Você foi removido desta reunião'"):
             print("❌ Bot foi removido da reunião.")
             return True
-
-        # Verifica se a reunião foi encerrada para todos
         if page.is_visible("text='As reuniões são apenas uma de nossas ferramentas.'"):
             print("❌ Reunião encerrada para todos.")
             return True
-
-        # Verifica se o bot está sozinho na reunião
         participantes = page.locator('[data-tid="toolbar-item-badge"]').inner_text()
         if participantes == "1":
             print("❌ Bot está sozinho na reunião.")
             return True
-
     except Exception as e:
         print(f"⚠️ Erro ao verificar condições de encerramento: {e}")
-
     return False
 
 def gravar_reuniao(link_reuniao_original):
-    print("📡 Iniciando processo de gravação da reunião. Versão 1.6")
+    print("📡 Iniciando processo de gravação da reunião. Versão corrigida")
     LINK_REUNIAO = gerar_link_anonimo_direto(link_reuniao_original)
     nome_arquivo = f"gravacao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
-    caminho_arquivo = os.path.join(os.getcwd(), nome_arquivo)
 
     try:
         with sync_playwright() as p:
@@ -90,7 +79,6 @@ def gravar_reuniao(link_reuniao_original):
             browser = p.chromium.launch(headless=False, args=["--use-fake-ui-for-media-stream"])
             print("✅ Navegador iniciado.")
             
-            # Configurando o idioma para português
             context = browser.new_context(
                 permissions=["microphone", "camera"],
                 locale="pt-BR",
@@ -119,22 +107,13 @@ def gravar_reuniao(link_reuniao_original):
                 page.wait_for_selector('button:has-text("Ingressar agora")', timeout=20000)
                 page.click('button:has-text("Ingressar agora")', force=True)
                 tirar_screenshot(page, "ingressar_agora")
-                print("✅ Tentando ingressar na reunião.")
+                print("✅ Ingressou na reunião.")
             except Exception as e:
                 print(f"❌ Erro ao ingressar na reunião: {e}")
                 tirar_screenshot(page, "erro_ingressar")
 
-            # Aguarda até que o bot seja aceito na reunião
-            print("⏳ Aguardando aceitação na reunião...")
-            while True:
-                if not page.is_visible("text='Oi, MarIA! Aguarde até que o organizador permita que você entre.'"):
-                    print("✅ Bot aceito na reunião. Iniciando gravação.")
-                    break
-                print("⌛ Ainda aguardando aceitação...")
-                time.sleep(5)
-
             time.sleep(10)
-            processo_ffmpeg = iniciar_gravacao(caminho_arquivo)
+            processo_ffmpeg = iniciar_gravacao(nome_arquivo)
 
             tempo_inicio = time.time()
             while True:
@@ -151,17 +130,11 @@ def gravar_reuniao(link_reuniao_original):
                 time.sleep(5)
 
             processo_ffmpeg.terminate()
-            processo_ffmpeg.wait()  # aguarda o arquivo ser fechado e gravado
-
             browser.close()
             print("📤 Enviando para o Google Cloud Storage...")
-            
-            if not os.path.exists(caminho_arquivo):
-                raise FileNotFoundError(f"Arquivo de gravação não encontrado: {caminho_arquivo}")
-
-            url = enviar_para_gcs(caminho_arquivo)
+            url = enviar_para_gcs(nome_arquivo)
             print(f"✅ Gravação enviada para o Google Cloud Storage: {url}")
-            return {"status": "finalizado", "arquivo": caminho_arquivo, "url_bucket": url}
+            return {"status": "finalizado", "arquivo": nome_arquivo, "url_bucket": url}
     except Exception as e:
         print(f"❌ Erro geral no processo: {e}")
         return {"status": "erro", "detalhes": str(e)}
