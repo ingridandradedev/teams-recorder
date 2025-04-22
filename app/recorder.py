@@ -5,7 +5,7 @@ from playwright.sync_api import sync_playwright
 from app.uploader import enviar_para_gcs
 import os
 
-NOME_USUARIO = "GravadorBot"  # Nome do bot
+NOME_USUARIO = "MarIA"  # Nome do bot
 DURACAO_MAXIMA = 10800  # 3 horas em segundos
 DISPOSITIVO_AUDIO = "default"  # Dispositivo de áudio padrão
 
