@@ -1,12 +1,11 @@
 from google.cloud import storage
 from google.oauth2 import service_account
-from datetime import timedelta
 import os
 
 BUCKET_NAME = "projeto-maria-1-0-pecege"
 CREDENTIALS_PATH = os.path.join(os.path.dirname(__file__), "maria-457717-9fa8d402e552.json")
 
-def enviar_para_gcs(nome_arquivo: str) -> str:
+def enviar_para_gcs(nome_arquivo: str) -> tuple[str, str]:
     print("📤 Iniciando upload para o Google Cloud Storage...")
 
     try:
@@ -20,14 +19,13 @@ def enviar_para_gcs(nome_arquivo: str) -> str:
         print(f"🔄 Fazendo upload do arquivo: {nome_arquivo}")
         blob.upload_from_filename(nome_arquivo)
 
-        # Gera uma URL assinada válida por 1 hora usando o método V4
-        url_assinada = blob.generate_signed_url(
-            version="v4",  # Use a versão 4 do método de URL assinada
-            expiration=timedelta(hours=1),
-            method="GET"
-        )
-        print(f"✅ Upload concluído. URL assinada gerada: {url_assinada}")
-        return url_assinada
+        # Torna o objeto público e gera URLs
+        blob.make_public()
+        public_url = blob.public_url
+        gs_uri = f"gs://{BUCKET_NAME}/{nome_arquivo}"
+
+        print(f"✅ Upload concluído. URL pública: {public_url}, URI GS: {gs_uri}")
+        return public_url, gs_uri
     except Exception as e:
         print(f"❌ Erro durante o upload para o Google Cloud Storage: {e}")
         raise

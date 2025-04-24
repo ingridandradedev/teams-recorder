@@ -111,5 +111,10 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
         browser.close()
 
     yield {"event": "upload_start", "file": nome_arquivo}
-    url = enviar_para_gcs(nome_arquivo)
-    yield {"event": "completed", "file": nome_arquivo, "url": url}
+    public_url, gs_uri = enviar_para_gcs(nome_arquivo)
+    yield {
+        "event": "completed",
+        "file": nome_arquivo,
+        "public_url": public_url,
+        "gs_uri": gs_uri
+    }
