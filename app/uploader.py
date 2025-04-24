@@ -3,8 +3,8 @@ from google.oauth2 import service_account
 from datetime import timedelta
 import os
 
-BUCKET_NAME = "maria-1-0-pecege"
-CREDENTIALS_PATH = os.path.join(os.path.dirname(__file__), "maria-456618-871b8f622168.json")
+BUCKET_NAME = "projeto-maria-1-0-pecege"
+CREDENTIALS_PATH = os.path.join(os.path.dirname(__file__), "maria-457717-9fa8d402e552.json")
 
 def enviar_para_gcs(nome_arquivo: str) -> str:
     print("📤 Iniciando upload para o Google Cloud Storage...")
