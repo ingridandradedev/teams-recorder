@@ -4,7 +4,7 @@ import json
 from typing import Dict
 from fastapi import FastAPI, Query
 from fastapi.responses import StreamingResponse
-from app.recorder import gravar_reuniao, gravar_reuniao_stream
+from app.recorder import gravar_reuniao_stream
 import asyncio
 import concurrent.futures
 
