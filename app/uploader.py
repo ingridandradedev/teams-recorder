@@ -19,9 +19,8 @@ def enviar_para_gcs(nome_arquivo: str) -> tuple[str, str]:
         print(f"🔄 Fazendo upload do arquivo: {nome_arquivo}")
         blob.upload_from_filename(nome_arquivo)
 
-        # Torna o objeto público e gera URLs
-        blob.make_public()
-        public_url = blob.public_url
+        # Gera URLs
+        public_url = f"https://storage.googleapis.com/{BUCKET_NAME}/{nome_arquivo}"
         gs_uri = f"gs://{BUCKET_NAME}/{nome_arquivo}"
 
         print(f"✅ Upload concluído. URL pública: {public_url}, URI GS: {gs_uri}")
