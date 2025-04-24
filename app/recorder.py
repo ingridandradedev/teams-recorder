@@ -3,6 +3,7 @@ import time
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 from app.uploader import enviar_para_gcs
+import threading
 import os
 
 NOME_USUARIO = "MarIA"  # Nome do bot
@@ -68,73 +69,47 @@ def verificar_condicoes_encerramento(page):
         print(f"⚠️ Erro ao verificar condições de encerramento: {e}")
     return False
 
-def gravar_reuniao(link_reuniao_original):
-    print("📡 Iniciando processo de gravação da reunião. Versão corrigida")
-    LINK_REUNIAO = gerar_link_anonimo_direto(link_reuniao_original)
+def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Event):
     nome_arquivo = f"gravacao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
+    yield {"event": "start_entry", "detail": "Gerando link anônimo"}
+    LINK = gerar_link_anonimo_direto(link_reuniao_original)
 
-    try:
-        with sync_playwright() as p:
-            print("🌐 Abrindo navegador...")
-            browser = p.chromium.launch(headless=False, args=["--use-fake-ui-for-media-stream"])
-            print("✅ Navegador iniciado.")
-            
-            context = browser.new_context(
-                permissions=["microphone", "camera"],
-                locale="pt-BR",
-                extra_http_headers={"Accept-Language": "pt-BR"}
-            )
-            page = context.new_page()
+    with sync_playwright() as p:
+        yield {"event": "opening_browser"}
+        browser = p.chromium.launch(headless=False, args=["--use-fake-ui-for-media-stream"])
+        context = browser.new_context(permissions=["microphone", "camera"], locale="pt-BR")
+        page = context.new_page()
 
-            print(f"🔗 Acessando o link: {LINK_REUNIAO}")
-            page.goto(LINK_REUNIAO, timeout=60000)
-            tirar_screenshot(page, "pagina_carregada")
-            print("✅ Página carregada.")
+        yield {"event": "navigating", "url": LINK}
+        page.goto(LINK, timeout=60000)
+        yield {"event": "page_loaded"}
 
-            try:
-                print("⌨️ Preenchendo nome...")
-                page.wait_for_selector('[data-tid="prejoin-display-name-input"]', timeout=20000)
-                page.fill('[data-tid="prejoin-display-name-input"]', NOME_USUARIO)
-                tirar_screenshot(page, "nome_preenchido")
-                print(f"✅ Nome preenchido como: {NOME_USUARIO}")
-            except Exception as e:
-                print(f"❌ Não conseguiu preencher nome: {e}")
+        # preenche nome e entra
+        yield {"event": "filling_name", "name": NOME_USUARIO}
+        page.fill('[data-tid="prejoin-display-name-input"]', NOME_USUARIO)
+        yield {"event": "requesting_entry"}
+        page.click('button:has-text("Ingressar agora")', force=True)
+        yield {"event": "joined"}
 
-            time.sleep(2)
+        time.sleep(10)
+        yield {"event": "recording_started", "file": nome_arquivo}
+        proc = iniciar_gravacao(nome_arquivo)
+        inicio = time.time()
 
-            try:
-                print("🚪 Clicando em 'Ingressar agora'...")
-                page.wait_for_selector('button:has-text("Ingressar agora")', timeout=20000)
-                page.click('button:has-text("Ingressar agora")', force=True)
-                tirar_screenshot(page, "ingressar_agora")
-                print("✅ Ingressou na reunião.")
-            except Exception as e:
-                print(f"❌ Erro ao ingressar na reunião: {e}")
-                tirar_screenshot(page, "erro_ingressar")
+        # loop de gravação
+        while True:
+            if stop_event.is_set():
+                yield {"event": "stopped_by_user"}
+                break
+            if (time.time() - inicio) > DURACAO_MAXIMA or verificar_condicoes_encerramento(page):
+                yield {"event": "auto_stopped"}
+                break
+            yield {"event": "recording", "elapsed": int(time.time() - inicio)}
+            time.sleep(5)
 
-            time.sleep(10)
-            processo_ffmpeg = iniciar_gravacao(nome_arquivo)
+        proc.terminate()
+        browser.close()
 
-            tempo_inicio = time.time()
-            while True:
-                if page.is_closed():
-                    print("🛑 A aba foi fechada. Encerrando gravação.")
-                    break
-                if (time.time() - tempo_inicio) > DURACAO_MAXIMA:
-                    print("⏱️ Tempo máximo de gravação atingido. Encerrando gravação.")
-                    break
-                if verificar_condicoes_encerramento(page):
-                    print("❌ Condição de encerramento atendida. Encerrando gravação.")
-                    break
-                print("🎧 Gravando...")
-                time.sleep(5)
-
-            processo_ffmpeg.terminate()
-            browser.close()
-            print("📤 Enviando para o Google Cloud Storage...")
-            url = enviar_para_gcs(nome_arquivo)
-            print(f"✅ Gravação enviada para o Google Cloud Storage: {url}")
-            return {"status": "finalizado", "arquivo": nome_arquivo, "url_bucket": url}
-    except Exception as e:
-        print(f"❌ Erro geral no processo: {e}")
-        return {"status": "erro", "detalhes": str(e)}
+    yield {"event": "upload_start", "file": nome_arquivo}
+    url = enviar_para_gcs(nome_arquivo)
+    yield {"event": "completed", "file": nome_arquivo, "url": url}
