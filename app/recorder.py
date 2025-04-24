@@ -84,11 +84,27 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
         page.goto(LINK, timeout=60000)
         yield {"event": "page_loaded"}
 
-        # preenche nome e entra
+        # Preenche o nome e clica em "Ingressar agora"
         yield {"event": "filling_name", "name": NOME_USUARIO}
         page.fill('[data-tid="prejoin-display-name-input"]', NOME_USUARIO)
         yield {"event": "requesting_entry"}
         page.click('button:has-text("Ingressar agora")', force=True)
+
+        # Aguarda até que a mensagem de espera desapareça
+        while True:
+            if stop_event.is_set():
+                yield {"event": "stopped_by_user"}
+                return
+            try:
+                if not page.is_visible("text='Oi, MarIA! Aguarde até que o organizador permita que você entre.'"):
+                    break
+            except Exception as e:
+                print(f"⚠️ Erro ao verificar mensagem de espera: {e}")
+                break
+            yield {"event": "requesting_entry", "detail": "Aguardando permissão do organizador"}
+            time.sleep(2)
+
+        # Entrou na reunião
         yield {"event": "joined"}
 
         time.sleep(10)
@@ -96,7 +112,7 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
         proc = iniciar_gravacao(nome_arquivo)
         inicio = time.time()
 
-        # loop de gravação
+        # Loop de gravação
         while True:
             if stop_event.is_set():
                 yield {"event": "stopped_by_user"}
