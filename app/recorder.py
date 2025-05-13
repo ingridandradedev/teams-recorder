@@ -1,5 +1,7 @@
 import subprocess
 import time
+import tempfile
+import shutil
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 from app.uploader import enviar_para_gcs
@@ -53,6 +55,17 @@ def tirar_screenshot(page, etapa):
     page.screenshot(path=screenshot_path)
     print(f"📸 Screenshot salva: {screenshot_path}")
 
+def tirar_screenshot_e_upload(page, etapa):
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    nome = f"screenshot_{etapa}_{ts}.png"
+    page.screenshot(path=nome)
+    print(f"📸 Screenshot salva: {nome}")
+    try:
+        public_url, _ = enviar_para_gcs(nome, destino="screenshot-logs")
+        print(f"✅ Screenshot enviada para GCS: {public_url}")
+    except Exception as e:
+        print(f"❌ Falha ao enviar screenshot: {e}")
+
 def verificar_condicoes_encerramento(page):
     try:
         if page.is_visible("text='Você foi removido desta reunião'"):
@@ -75,14 +88,22 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
     LINK = gerar_link_anonimo_direto(link_reuniao_original)
 
     with sync_playwright() as p:
+        # 1) diretório temporário para perfil limpo
+        user_data = tempfile.mkdtemp()
+        browser = p.chromium.launch_persistent_context(
+            user_data_dir=user_data,
+            headless=False,
+            args=["--use-fake-ui-for-media-stream"]
+        )
+        page = browser.new_page()
+
+        # 2) Após abrir browser, já capturamos
         yield {"event": "opening_browser"}
-        browser = p.chromium.launch(headless=False, args=["--use-fake-ui-for-media-stream"])
-        context = browser.new_context(permissions=["microphone", "camera"], locale="pt-BR")
-        page = context.new_page()
+        tirar_screenshot_e_upload(page, "opening_browser")
 
         yield {"event": "navigating", "url": LINK}
         page.goto(LINK, timeout=60000)
-        yield {"event": "page_loaded"}
+        tirar_screenshot_e_upload(page, "navigated")
 
         # Preenche o nome e clica em "Ingressar agora"
         yield {"event": "filling_name", "name": NOME_USUARIO}
@@ -106,9 +127,11 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
 
         # Entrou na reunião
         yield {"event": "joined"}
+        tirar_screenshot_e_upload(page, "joined")
 
         time.sleep(10)
         yield {"event": "recording_started", "file": nome_arquivo}
+        tirar_screenshot_e_upload(page, "recording_started")
         proc = iniciar_gravacao(nome_arquivo)
         inicio = time.time()
 
@@ -125,6 +148,7 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
 
         proc.terminate()
         browser.close()
+        shutil.rmtree(user_data, ignore_errors=True)
 
     yield {"event": "upload_start", "file": nome_arquivo}
     public_url, gs_uri = enviar_para_gcs(nome_arquivo)
