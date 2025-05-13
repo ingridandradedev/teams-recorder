@@ -88,14 +88,13 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
     LINK = gerar_link_anonimo_direto(link_reuniao_original)
 
     with sync_playwright() as p:
-        # 1) diretório temporário para perfil limpo
-        user_data = tempfile.mkdtemp()
-        browser = p.chromium.launch_persistent_context(
-            user_data_dir=user_data,
+        # 1) lança um browser completamente limpo a cada execução
+        browser = p.chromium.launch(
             headless=False,
             args=["--use-fake-ui-for-media-stream"]
         )
-        page = browser.new_page()
+        context = browser.new_context()
+        page = context.new_page()
 
         # 2) Após abrir browser, já capturamos
         yield {"event": "opening_browser"}
@@ -147,8 +146,9 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
             time.sleep(5)
 
         proc.terminate()
+        # fecha contexto e browser
+        context.close()
         browser.close()
-        shutil.rmtree(user_data, ignore_errors=True)
 
     yield {"event": "upload_start", "file": nome_arquivo}
     public_url, gs_uri = enviar_para_gcs(nome_arquivo)
