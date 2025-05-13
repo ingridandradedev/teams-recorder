@@ -108,6 +108,7 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
         yield {"event": "filling_name", "name": NOME_USUARIO}
         page.wait_for_selector('[data-tid="prejoin-display-name-input"]', timeout=60000)
         page.fill('[data-tid="prejoin-display-name-input"]', NOME_USUARIO)
+        tirar_screenshot_e_upload(page, "after_filling_name") # Add this line
 
         # Aguarda o botão “Ingressar agora” ficar clicável
         yield {"event": "requesting_entry"}
