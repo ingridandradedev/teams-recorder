@@ -104,7 +104,7 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
             headless=False, 
             args=[
                 "--use-fake-ui-for-media-stream",
-                "--mute-audio",
+                # "--mute-audio", # REMOVED THIS LINE - LIKELY CAUSE OF MUTE AUDIO
                 "--disable-infobars",
                 "--no-sandbox", 
                 "--disable-dev-shm-usage"
@@ -139,13 +139,12 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
         for selector, description in popup_button_selectors:
             try:
                 yield {"event": "attempting_to_find_audio_video_popup_button", "description": description}
-                # Use a shorter timeout for is_visible as the popup should appear relatively quickly if it's going to.
                 if page.is_visible(selector, timeout=15000): 
                     yield {"event": "audio_video_popup_button_found", "description": description}
                     page.click(selector, timeout=10000)
                     yield {"event": "clicked_audio_video_popup_button", "description": description}
                     tirar_screenshot_e_upload(page, f"after_clicking_audio_video_popup_{description.replace(' ', '_').lower()}")
-                    page.wait_for_timeout(2000) # Give time for popup to close
+                    page.wait_for_timeout(2000) 
                     popup_clicked_successfully = True
                     break 
                 else:
@@ -194,26 +193,17 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
             return
 
         yield {"event": "waiting_for_organizer_permission"}
-        # Using a more generic way to detect lobby, or successful entry.
-        # Waiting for the "waiting message" to disappear OR a known element from inside the meeting to appear.
-        
         lobby_message_selectors = [
             "text='Oi, MarIA! Aguarde até que o organizador permita que você entre.'", # PT
             "text='Hi, MarIA! Waiting for the host to let you in.'" # EN (example)
-            # Add other variations if observed
         ]
         
         in_lobby_or_failed_to_join = True
         try:
-            # Option 1: Wait for lobby message to disappear (if it appears)
-            # This requires the lobby message to actually show up first.
-            # We'll use a combined approach: wait for it to be hidden, or if it never shows, that's also fine.
-            
-            # Check if any lobby message is visible initially
             lobby_message_is_currently_visible = False
             visible_lobby_selector = None
             for sel in lobby_message_selectors:
-                if page.is_visible(sel, timeout=5000): # Quick check
+                if page.is_visible(sel, timeout=5000): 
                     lobby_message_is_currently_visible = True
                     visible_lobby_selector = sel
                     yield {"event": "lobby_message_detected", "selector": sel}
@@ -222,56 +212,39 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
             
             if lobby_message_is_currently_visible and visible_lobby_selector:
                 yield {"event": "waiting_for_lobby_message_to_disappear", "selector": visible_lobby_selector}
-                page.wait_for_selector(visible_lobby_selector, state="hidden", timeout=300000) # Wait up to 5 minutes
+                page.wait_for_selector(visible_lobby_selector, state="hidden", timeout=300000) 
                 yield {"event": "lobby_message_disappeared_or_timed_out"}
-                in_lobby_or_failed_to_join = False # Assume passed lobby
+                in_lobby_or_failed_to_join = False 
             else:
-                # If no lobby message was immediately visible, we might be in, or something else happened.
-                # Give it a few seconds to see if we land in the meeting or if a lobby message appears late.
                 yield {"event": "no_immediate_lobby_message_checking_meeting_state"}
-                page.wait_for_timeout(15000) # Wait a bit to see if page settles or lobby appears
+                page.wait_for_timeout(15000) 
                 
-                # Re-check for lobby message
                 still_in_lobby_after_wait = False
                 for sel in lobby_message_selectors:
                     if page.is_visible(sel, timeout=5000):
                         yield {"event": "lobby_message_appeared_late", "selector": sel}
                         tirar_screenshot_e_upload(page, "lobby_message_appeared_late")
-                        # If it appeared late, we might be stuck. For now, we'll assume we should proceed if it doesn't error out.
-                        # A more robust solution might re-trigger the wait_for_selector(state="hidden")
-                        # For simplicity, we'll assume if it's visible now, we might be stuck, but the recording loop will handle it.
-                        # The main goal here is to not get stuck indefinitely *before* starting ffmpeg.
-                        # For now, we'll just note it and proceed.
-                        # A better check would be to see if we are *actually* in the meeting.
-                        # This part can be improved by looking for an element *inside* the meeting.
                         still_in_lobby_after_wait = True 
                         break
                 if not still_in_lobby_after_wait:
-                     in_lobby_or_failed_to_join = False # Assume passed or no lobby
+                     in_lobby_or_failed_to_join = False
 
-            if in_lobby_or_failed_to_join and not page.is_closed(): # If we think we might still be in lobby
-                 # Check for a known element that appears *only* when successfully in a meeting
-                 # Example: a control bar, participant list button, etc. This is highly dependent on Teams UI.
-                 # For now, we'll proceed with a warning if we couldn't confirm exit from lobby.
+            if in_lobby_or_failed_to_join and not page.is_closed():
                  yield {"event": "lobby_status_uncertain_proceeding_to_record"}
                  tirar_screenshot_e_upload(page, "lobby_status_uncertain")
 
-
-        except PlaywrightTimeoutError as pte_lobby: # Timeout waiting for lobby message to disappear
+        except PlaywrightTimeoutError as pte_lobby: 
             yield {"event": "error", "type": "lobby_timeout", "detail": f"Timed out waiting for lobby message to change state: {str(pte_lobby)}"}
             tirar_screenshot_e_upload(page, "error_lobby_timeout")
-            # Potentially stuck in lobby, but we might still try to record if the meeting starts later.
-            # Or, we could return here if being stuck in lobby is a definitive failure.
-            # For now, let's proceed to recording, the recording loop might catch if meeting never starts.
         except Exception as e_lobby:
             yield {"event": "error", "type": "lobby_error", "detail": f"Error during lobby check: {str(e_lobby)}"}
             tirar_screenshot_e_upload(page, "error_lobby_exception")
-            return # Critical error in lobby, stop.
+            return 
             
         yield {"event": "assumed_joined_meeting_or_past_lobby"}
         tirar_screenshot_e_upload(page, "after_lobby_or_joined")
 
-        time.sleep(10) # Settling time after joining/lobby
+        time.sleep(10) 
         
         yield {"event": "recording_starting_ffmpeg", "file": nome_arquivo}
         tirar_screenshot_e_upload(page, "before_ffmpeg_start")
@@ -289,7 +262,12 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
             
             if page.is_closed():
                 yield {"event": "error", "type": "page_closed_unexpectedly", "detail": "Browser page was closed during recording."}
-                tirar_screenshot_e_upload(page, "error_page_closed_during_recording") # page object might be invalid here
+                # Screenshot might fail if page is already closed, but attempt it.
+                try:
+                    if page and not page.is_closed(): # Re-check, though likely closed
+                         tirar_screenshot_e_upload(page, "error_page_closed_during_recording")
+                except Exception:
+                    print("Could not take screenshot, page was already closed.")
                 break
 
             if verificar_condicoes_encerramento(page): 
@@ -299,7 +277,7 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
             
             if proc.poll() is not None: 
                 yield {"event": "error", "type": "ffmpeg_terminated_unexpectedly", "detail": f"FFmpeg process exited with code {proc.returncode}"}
-                tirar_screenshot_e_upload(page, "error_ffmpeg_terminated")
+                if page and not page.is_closed(): tirar_screenshot_e_upload(page, "error_ffmpeg_terminated")
                 return 
 
             yield {"event": "recording", "elapsed": int(time.time() - inicio_gravacao_ts)}
@@ -316,23 +294,27 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
         if page and not page.is_closed(): tirar_screenshot_e_upload(page, "error_unexpected_main")
         return
     finally:
+        ffmpeg_exit_code = None
         if proc: 
             if proc.poll() is None: 
                 print("Terminating FFmpeg process...")
                 proc.terminate()
                 try:
                     proc.wait(timeout=10) 
-                    print(f"FFmpeg terminated with code: {proc.returncode}")
+                    ffmpeg_exit_code = proc.returncode
+                    print(f"FFmpeg terminated with code: {ffmpeg_exit_code}")
                 except subprocess.TimeoutExpired:
                     print("FFmpeg did not terminate gracefully, killing.")
                     proc.kill()
                     proc.wait()
-                    print("FFmpeg killed.")
+                    ffmpeg_exit_code = proc.returncode # Capture exit code after kill
+                    print(f"FFmpeg killed, exit code: {ffmpeg_exit_code}")
                 except Exception as e_proc_term:
                     print(f"Error during FFmpeg termination: {e_proc_term}")
             else: 
-                 print(f"FFmpeg process already terminated with code: {proc.returncode} before explicit stop.")
-            yield {"event": "recording_process_handled"}
+                 ffmpeg_exit_code = proc.returncode
+                 print(f"FFmpeg process already terminated with code: {ffmpeg_exit_code} before explicit stop.")
+            yield {"event": "recording_process_handled", "ffmpeg_exit_code": ffmpeg_exit_code}
 
         if page and not page.is_closed():
             try:
@@ -353,33 +335,53 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
             except Exception as e: print(f"Error stopping Playwright: {e}")
         yield {"event": "browser_resources_closed"}
 
-    if os.path.exists(nome_arquivo) and proc is not None and proc.returncode == 0 : # Ensure FFmpeg started and exited cleanly (or was terminated)
-        yield {"event": "upload_start", "file": nome_arquivo}
-        try:
-            public_url, gs_uri = enviar_para_gcs(nome_arquivo)
-            yield {
-                "event": "completed",
-                "file": nome_arquivo,
-                "public_url": public_url,
-                "gs_uri": gs_uri
-            }
-        except Exception as e_upload:
-            yield {"event": "error", "type": "upload_error", "detail": f"Failed to upload {nome_arquivo}: {str(e_upload)}"}
-    elif proc is None and not os.path.exists(nome_arquivo):
-        yield {"event": "process_ended_before_recording_file_creation", "detail": f"Recording file {nome_arquivo} was not created, FFmpeg likely not started."}
-    elif not os.path.exists(nome_arquivo) and proc is not None:
-         yield {"event": "error", "type": "file_not_found_after_ffmpeg", "detail": f"Recording file {nome_arquivo} not found after FFmpeg process. FFmpeg might have failed (exit code: {proc.returncode})."}
-    elif os.path.exists(nome_arquivo) and proc is not None and proc.returncode != 0:
-        yield {"event": "error", "type": "ffmpeg_error_with_file", "detail": f"FFmpeg process exited with code {proc.returncode}, but a file {nome_arquivo} exists (may be incomplete). Uploading anyway."}
-        # Optionally upload the potentially corrupt file
-        try:
-            public_url, gs_uri = enviar_para_gcs(nome_arquivo)
-            yield {
-                "event": "completed_with_ffmpeg_error",
-                "file": nome_arquivo,
-                "public_url": public_url,
-                "gs_uri": gs_uri,
-                "ffmpeg_exit_code": proc.returncode
-            }
-        except Exception as e_upload_err:
-            yield {"event": "error", "type": "upload_error_after_ffmpeg_error", "detail": f"Failed to upload {nome_arquivo} (after FFmpeg error): {str(e_upload_err)}"}
+    # Ensure ffmpeg_exit_code is defined for the conditions below
+    # It would be None if proc was None (i.e., FFmpeg never started)
+    current_ffmpeg_exit_code = ffmpeg_exit_code if proc else None
+
+    if os.path.exists(nome_arquivo):
+        if current_ffmpeg_exit_code == 0 or (current_ffmpeg_exit_code is not None and current_ffmpeg_exit_code != 0 and stop_event.is_set()): # FFmpeg exited cleanly OR was stopped by user (non-zero code is expected)
+            yield {"event": "upload_start", "file": nome_arquivo}
+            try:
+                public_url, gs_uri = enviar_para_gcs(nome_arquivo)
+                yield {
+                    "event": "completed",
+                    "file": nome_arquivo,
+                    "public_url": public_url,
+                    "gs_uri": gs_uri,
+                    "ffmpeg_exit_code": current_ffmpeg_exit_code
+                }
+            except Exception as e_upload:
+                yield {"event": "error", "type": "upload_error", "detail": f"Failed to upload {nome_arquivo}: {str(e_upload)}", "ffmpeg_exit_code": current_ffmpeg_exit_code}
+        elif current_ffmpeg_exit_code is not None and current_ffmpeg_exit_code != 0: # FFmpeg errored and file exists
+            yield {"event": "error", "type": "ffmpeg_error_with_file", "detail": f"FFmpeg process exited with code {current_ffmpeg_exit_code}, but a file {nome_arquivo} exists (may be incomplete). Uploading anyway."}
+            try:
+                public_url, gs_uri = enviar_para_gcs(nome_arquivo)
+                yield {
+                    "event": "completed_with_ffmpeg_error",
+                    "file": nome_arquivo,
+                    "public_url": public_url,
+                    "gs_uri": gs_uri,
+                    "ffmpeg_exit_code": current_ffmpeg_exit_code
+                }
+            except Exception as e_upload_err:
+                yield {"event": "error", "type": "upload_error_after_ffmpeg_error", "detail": f"Failed to upload {nome_arquivo} (after FFmpeg error {current_ffmpeg_exit_code}): {str(e_upload_err)}"}
+        else: # File exists but FFmpeg process info is unclear (e.g. proc is None but file exists - unusual)
+             yield {"event": "error", "type": "file_exists_ffmpeg_status_unclear", "detail": f"File {nome_arquivo} exists, but FFmpeg status is unclear (exit code: {current_ffmpeg_exit_code}). Attempting upload."}
+             try:
+                public_url, gs_uri = enviar_para_gcs(nome_arquivo)
+                yield {
+                    "event": "completed_with_ffmpeg_status_unclear",
+                    "file": nome_arquivo,
+                    "public_url": public_url,
+                    "gs_uri": gs_uri,
+                    "ffmpeg_exit_code": current_ffmpeg_exit_code
+                }
+             except Exception as e_upload_unclear:
+                yield {"event": "error", "type": "upload_error_ffmpeg_status_unclear", "detail": f"Failed to upload {nome_arquivo} (FFmpeg status unclear): {str(e_upload_unclear)}"}
+
+    elif not os.path.exists(nome_arquivo):
+        if proc is None: # FFmpeg never started, and no file
+            yield {"event": "process_ended_before_recording_file_creation", "detail": f"Recording file {nome_arquivo} was not created, FFmpeg likely not started."}
+        else: # FFmpeg started but no file created
+             yield {"event": "error", "type": "file_not_found_after_ffmpeg", "detail": f"Recording file {nome_arquivo} not found after FFmpeg process. FFmpeg might have failed (exit code: {current_ffmpeg_exit_code})."}
