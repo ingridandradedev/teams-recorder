@@ -104,11 +104,15 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
         page.goto(LINK, timeout=60000)
         tirar_screenshot_e_upload(page, "navigated")
 
-        # Preenche o nome e clica em "Ingressar agora"
+        # Preenche o nome após aguardar o input estar disponível
         yield {"event": "filling_name", "name": NOME_USUARIO}
+        page.wait_for_selector('[data-tid="prejoin-display-name-input"]', timeout=60000)
         page.fill('[data-tid="prejoin-display-name-input"]', NOME_USUARIO)
+
+        # Aguarda o botão “Ingressar agora” ficar clicável
         yield {"event": "requesting_entry"}
-        page.click('button:has-text("Ingressar agora")', force=True)
+        page.wait_for_selector('button:has-text("Ingressar agora"):not([disabled])', timeout=60000)
+        page.click('button:has-text("Ingressar agora")', timeout=60000)
 
         # Aguarda até que a mensagem de espera desapareça
         while True:
