@@ -17,6 +17,7 @@ RUN apt-get update && \
     pulseaudio \
     pulseaudio-utils \
     xvfb \
+    xauth \
     # Dependências comuns para navegadores e Playwright no Debian Buster
     libnss3 \
     libnspr4 \

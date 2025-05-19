@@ -4,15 +4,6 @@ set -euo pipefail
 # Garante que o script execute sempre do diretório raiz do repo
 cd "$(dirname "$0")"
 
-# Ativa o virtualenv (opcional, pois chamaremos o uvicorn dentro dele)
-if [ -d "venv" ]; then
-  echo "🔄 Ativando o ambiente virtual..."
-  source venv/bin/activate
-else
-  echo "❌ Ambiente virtual 'venv' não encontrado. Certifique-se de criá-lo antes de executar o script."
-  exit 1
-fi
-
 # Verifica se o PulseAudio está instalado
 if ! command -v pulseaudio &> /dev/null; then
   echo "❌ PulseAudio não está instalado. Instale-o antes de continuar."
