@@ -17,7 +17,7 @@ RUN apt-get update && \
     pulseaudio \
     pulseaudio-utils \
     xvfb \
-    # Dependências comuns para navegadores (Playwright irá instalar as específicas)
+    # Dependências comuns para navegadores e Playwright no Debian Buster
     libnss3 \
     libnspr4 \
     libdbus-glib-1-2 \
@@ -34,6 +34,15 @@ RUN apt-get update && \
     libxrandr2 \
     libxshmfence1 \
     libxkbcommon0 \
+    libx11-xcb1 \
+    libxrender1 \
+    libxtst6 \
+    libpangocairo-1.0-0 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libgdk-pixbuf2.0-0 \
+    libgtk-3-0 \
+    fonts-liberation \
     # Limpeza
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -47,10 +56,9 @@ COPY requirements.txt ./
 # O --no-cache-dir é usado para reduzir o tamanho da imagem
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 6. Instalar Navegadores Playwright e suas dependências de SO
-# Isso garante que o Chromium e suas dependências de sistema estejam presentes
-RUN playwright install-deps chromium && \
-    playwright install chromium
+# 6. Instalar Navegadores Playwright
+# As dependências de SO foram instaladas manualmente acima
+RUN playwright install chromium
 
 # 7. Copiar Código da Aplicação
 # ATENÇÃO: O arquivo de credenciais JSON (maria-457717-9fa8d402e552.json) está sendo copiado.
