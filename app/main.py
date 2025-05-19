@@ -11,7 +11,7 @@ app = FastAPI(title="Teams Recorder API")
 # --- Configuração de Autenticação ---
 # ATENÇÃO: Para produção, carregue este token de uma variável de ambiente ou de um gerenciador de segredos!
 # Exemplo: API_TOKEN = os.getenv("TEAMS_RECORDER_API_TOKEN", "fallback_token_se_nao_definido")
-EXPECTED_API_TOKEN = "COLOQUE_SEU_TOKEN_SECRETO_E_FORTE_AQUI" 
+EXPECTED_API_TOKEN = "b3e59f8b8c4f48d09e0a0ff172b19a43d79ab69e165d0ec7037cbef967de2a3a" 
 
 async def verify_api_key(x_api_token: str = Header(None, description="Seu token de API secreto.")):
     """
