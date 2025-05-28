@@ -47,6 +47,10 @@ RUN apt-get update && \
     # Limpeza
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Configurar PulseAudio para não sair quando ocioso
+RUN sed -i 's/; exit-idle-time = 20/exit-idle-time = -1/' /etc/pulse/daemon.conf && \
+    sed -i 's/; flat-volumes = yes/flat-volumes = no/' /etc/pulse/daemon.conf
+
 # 3. Definir Diretório de Trabalho
 WORKDIR /app
 
