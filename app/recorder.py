@@ -97,6 +97,7 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
     context = None
     page = None
     proc = None
+    auto_stopped_conditions_were_met = False # Flag para indicar parada automática por condições
 
     try:
         playwright_instance = sync_playwright().start()
@@ -231,20 +232,21 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
 
             if in_lobby_or_failed_to_join and not page.is_closed():
                  yield {"event": "lobby_status_uncertain_proceeding_to_record"}
-                 tirar_screenshot_e_upload(page, "lobby_status_uncertain")
+                 tirar_screenshot_e_upload(page, "lobby_status_uncerto")
 
         except PlaywrightTimeoutError as pte_lobby: 
             yield {"event": "error", "type": "lobby_timeout", "detail": f"Timed out waiting for lobby message to change state: {str(pte_lobby)}"}
             tirar_screenshot_e_upload(page, "error_lobby_timeout")
+            # Não retorna aqui, pois podemos ainda estar na reunião
         except Exception as e_lobby:
             yield {"event": "error", "type": "lobby_error", "detail": f"Error during lobby check: {str(e_lobby)}"}
             tirar_screenshot_e_upload(page, "error_lobby_exception")
-            return 
+            return # Retorna se houver um erro inesperado no lobby
             
         yield {"event": "assumed_joined_meeting_or_past_lobby"}
         tirar_screenshot_e_upload(page, "after_lobby_or_joined")
 
-        time.sleep(10) 
+        time.sleep(10) # Pequena pausa para estabilizar a entrada na reunião
         
         yield {"event": "recording_starting_ffmpeg", "file": nome_arquivo}
         tirar_screenshot_e_upload(page, "before_ffmpeg_start")
@@ -258,27 +260,30 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
                 break
             if (time.time() - inicio_gravacao_ts) > DURACAO_MAXIMA:
                 yield {"event": "auto_stopped_max_duration", "stage": "recording"}
+                auto_stopped_conditions_were_met = True # Considerar como uma condição de parada
                 break
             
             if page.is_closed():
                 yield {"event": "error", "type": "page_closed_unexpectedly", "detail": "Browser page was closed during recording."}
-                # Screenshot might fail if page is already closed, but attempt it.
                 try:
-                    if page and not page.is_closed(): # Re-check, though likely closed
+                    if page and not page.is_closed(): 
                          tirar_screenshot_e_upload(page, "error_page_closed_during_recording")
                 except Exception:
                     print("Could not take screenshot, page was already closed.")
+                auto_stopped_conditions_were_met = True # Página fechada é uma condição de parada
                 break
 
             if verificar_condicoes_encerramento(page): 
                 yield {"event": "auto_stopped_conditions_met", "stage": "recording"}
+                auto_stopped_conditions_were_met = True # Define a flag aqui
                 tirar_screenshot_e_upload(page, "conditions_met_for_stop")
                 break
             
             if proc.poll() is not None: 
                 yield {"event": "error", "type": "ffmpeg_terminated_unexpectedly", "detail": f"FFmpeg process exited with code {proc.returncode}"}
                 if page and not page.is_closed(): tirar_screenshot_e_upload(page, "error_ffmpeg_terminated")
-                return 
+                # Não definimos auto_stopped_conditions_were_met aqui, pois é um erro do FFmpeg, não uma condição de reunião
+                return # Encerra o gerador se o FFmpeg parar inesperadamente
 
             yield {"event": "recording", "elapsed": int(time.time() - inicio_gravacao_ts)}
             time.sleep(5) 
@@ -287,30 +292,33 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
         error_message = f"Playwright Timeout Error: {str(pte)}"
         yield {"event": "error", "type": "playwright_timeout_main", "detail": error_message, "traceback": traceback.format_exc()}
         if page and not page.is_closed(): tirar_screenshot_e_upload(page, "error_playwright_timeout_main")
-        return
+        auto_stopped_conditions_were_met = True # Timeout pode ser considerado uma condição de parada
+        # Não retorna aqui, prossegue para o finally para tentar salvar o que foi gravado
     except Exception as e:
         error_message = f"An unexpected error occurred: {str(e)}"
         yield {"event": "error", "type": "unexpected_error_main", "detail": error_message, "traceback": traceback.format_exc()}
         if page and not page.is_closed(): tirar_screenshot_e_upload(page, "error_unexpected_main")
-        return
+        auto_stopped_conditions_were_met = True # Erro inesperado também pode ser condição de parada
+        # Não retorna aqui, prossegue para o finally
     finally:
         ffmpeg_exit_code = None
         if proc: 
             if proc.poll() is None: 
                 print("Terminating FFmpeg process...")
-                proc.terminate()
+                proc.terminate() # Envia SIGTERM
                 try:
-                    proc.wait(timeout=10) 
+                    proc.wait(timeout=10) # Espera FFmpeg finalizar
                     ffmpeg_exit_code = proc.returncode
                     print(f"FFmpeg terminated with code: {ffmpeg_exit_code}")
                 except subprocess.TimeoutExpired:
                     print("FFmpeg did not terminate gracefully, killing.")
-                    proc.kill()
-                    proc.wait()
-                    ffmpeg_exit_code = proc.returncode # Capture exit code after kill
+                    proc.kill() # Envia SIGKILL
+                    proc.wait() # Espera FFmpeg finalizar após kill
+                    ffmpeg_exit_code = proc.returncode 
                     print(f"FFmpeg killed, exit code: {ffmpeg_exit_code}")
                 except Exception as e_proc_term:
                     print(f"Error during FFmpeg termination: {e_proc_term}")
+                    # ffmpeg_exit_code pode permanecer None ou ter um valor anterior se wait falhou
             else: 
                  ffmpeg_exit_code = proc.returncode
                  print(f"FFmpeg process already terminated with code: {ffmpeg_exit_code} before explicit stop.")
@@ -335,30 +343,32 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
             except Exception as e: print(f"Error stopping Playwright: {e}")
         yield {"event": "browser_resources_closed"}
 
-    # Ensure ffmpeg_exit_code is defined for the conditions below
-    # It would be None if proc was None (i.e., FFmpeg never started)
-    current_ffmpeg_exit_code = ffmpeg_exit_code if proc else None
+    current_ffmpeg_exit_code = ffmpeg_exit_code
 
     if os.path.exists(nome_arquivo):
-        if current_ffmpeg_exit_code == 0 or (current_ffmpeg_exit_code is not None and current_ffmpeg_exit_code != 0 and stop_event.is_set()): # FFmpeg exited cleanly OR was stopped by user (non-zero code is expected)
+        # Condição modificada: FFmpeg saiu limpo OU foi parado pelo usuário OU parado por condições automáticas
+        if current_ffmpeg_exit_code == 0 or \
+           (current_ffmpeg_exit_code is not None and current_ffmpeg_exit_code != 0 and (stop_event.is_set() or auto_stopped_conditions_were_met)):
             yield {"event": "upload_start", "file": nome_arquivo}
             try:
                 public_url, gs_uri = enviar_para_gcs(nome_arquivo)
                 yield {
-                    "event": "completed",
+                    "event": "completed", # Evento unificado para paradas "controladas"
                     "file": nome_arquivo,
                     "public_url": public_url,
                     "gs_uri": gs_uri,
-                    "ffmpeg_exit_code": current_ffmpeg_exit_code
+                    "ffmpeg_exit_code": current_ffmpeg_exit_code,
+                    "stopped_by_user": stop_event.is_set(),
+                    "auto_stopped_conditions": auto_stopped_conditions_were_met
                 }
             except Exception as e_upload:
-                yield {"event": "error", "type": "upload_error", "detail": f"Failed to upload {nome_arquivo}: {str(e_upload)}", "ffmpeg_exit_code": current_ffmpeg_exit_code}
-        elif current_ffmpeg_exit_code is not None and current_ffmpeg_exit_code != 0: # FFmpeg errored and file exists
+                yield {"event": "error", "type": "upload_error_after_controlled_stop", "detail": f"Failed to upload {nome_arquivo}: {str(e_upload)}", "ffmpeg_exit_code": current_ffmpeg_exit_code}
+        elif current_ffmpeg_exit_code is not None and current_ffmpeg_exit_code != 0: # Erro do FFmpeg (e não devido a parada de usuário/auto) e arquivo existe
             yield {"event": "error", "type": "ffmpeg_error_with_file", "detail": f"FFmpeg process exited with code {current_ffmpeg_exit_code}, but a file {nome_arquivo} exists (may be incomplete). Uploading anyway."}
             try:
                 public_url, gs_uri = enviar_para_gcs(nome_arquivo)
                 yield {
-                    "event": "completed_with_ffmpeg_error",
+                    "event": "completed_with_ffmpeg_error", # Mantém para erros genuínos do FFmpeg
                     "file": nome_arquivo,
                     "public_url": public_url,
                     "gs_uri": gs_uri,
@@ -366,7 +376,7 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
                 }
             except Exception as e_upload_err:
                 yield {"event": "error", "type": "upload_error_after_ffmpeg_error", "detail": f"Failed to upload {nome_arquivo} (after FFmpeg error {current_ffmpeg_exit_code}): {str(e_upload_err)}"}
-        else: # File exists but FFmpeg process info is unclear (e.g. proc is None but file exists - unusual)
+        else: # Arquivo existe mas status do FFmpeg não é claro (ex: proc é None mas arquivo existe - incomum, ou current_ffmpeg_exit_code é None)
              yield {"event": "error", "type": "file_exists_ffmpeg_status_unclear", "detail": f"File {nome_arquivo} exists, but FFmpeg status is unclear (exit code: {current_ffmpeg_exit_code}). Attempting upload."}
              try:
                 public_url, gs_uri = enviar_para_gcs(nome_arquivo)
@@ -381,7 +391,7 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
                 yield {"event": "error", "type": "upload_error_ffmpeg_status_unclear", "detail": f"Failed to upload {nome_arquivo} (FFmpeg status unclear): {str(e_upload_unclear)}"}
 
     elif not os.path.exists(nome_arquivo):
-        if proc is None: # FFmpeg never started, and no file
-            yield {"event": "process_ended_before_recording_file_creation", "detail": f"Recording file {nome_arquivo} was not created, FFmpeg likely not started."}
-        else: # FFmpeg started but no file created
-             yield {"event": "error", "type": "file_not_found_after_ffmpeg", "detail": f"Recording file {nome_arquivo} not found after FFmpeg process. FFmpeg might have failed (exit code: {current_ffmpeg_exit_code})."}
+        if proc is None and not auto_stopped_conditions_were_met and not stop_event.is_set(): # FFmpeg nunca iniciou, e não foi uma parada "controlada" antes do FFmpeg
+            yield {"event": "process_ended_before_recording_file_creation", "detail": f"Recording file {nome_arquivo} was not created, FFmpeg likely not started or process ended before FFmpeg could start."}
+        else: # FFmpeg iniciou (ou deveria ter iniciado) mas nenhum arquivo foi criado, ou foi uma parada controlada antes da criação do arquivo
+             yield {"event": "error", "type": "file_not_found_after_process_end", "detail": f"Recording file {nome_arquivo} not found after process end. FFmpeg might have failed or was stopped before/during creation (exit code: {current_ffmpeg_exit_code}).", "stopped_by_user": stop_event.is_set(), "auto_stopped_conditions": auto_stopped_conditions_were_met}
