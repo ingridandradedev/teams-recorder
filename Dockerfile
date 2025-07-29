@@ -44,6 +44,10 @@ RUN apt-get update && \
     libgdk-pixbuf2.0-0 \
     libgtk-3-0 \
     fonts-liberation \
+    libxss1 \
+    libappindicator3-1 \
+    libu2f-udev \
+    libvulkan1 \
     # Limpeza
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 

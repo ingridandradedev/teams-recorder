@@ -87,6 +87,17 @@ def verificar_condicoes_encerramento(page):
         print(f"⚠️ Erro ao verificar condições de encerramento: {e}")
     return False
 
+def tentar_reingressar(page):
+    try:
+        if page.is_visible('button:has-text("Reingressar na chamada")', timeout=5000):
+            print("🔄 Tentando reingressar na chamada...")
+            page.click('button:has-text("Reingressar na chamada")')
+            page.wait_for_timeout(3000)
+            return True
+    except Exception as e:
+        print(f"Erro ao tentar reingressar: {e}")
+    return False
+
 def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Event):
     nome_arquivo = f"gravacao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
     yield {"event": "start_entry", "detail": "Gerando link anônimo"}
@@ -102,18 +113,22 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
     try:
         playwright_instance = sync_playwright().start()
         browser = playwright_instance.chromium.launch(
-            headless=False, 
+            headless=False,
             args=[
                 "--use-fake-ui-for-media-stream",
-                # "--mute-audio", # REMOVED THIS LINE - LIKELY CAUSE OF MUTE AUDIO
                 "--disable-infobars",
-                "--no-sandbox", 
+                "--disable-blink-features=AutomationControlled",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--window-size=1280,720",
+                "--start-maximized",
+                "--no-sandbox",
                 "--disable-dev-shm-usage"
             ]
         )
         context = browser.new_context(
-            viewport={"width": 1280, "height": 720}, 
-            locale="pt-BR" 
+            viewport={"width": 1280, "height": 720},
+            locale="pt-BR",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.5735.90 Safari/537.36"
         )
         context.grant_permissions(["microphone", "camera"])
         page = context.new_page()
@@ -285,6 +300,10 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
                 # Não definimos auto_stopped_conditions_were_met aqui, pois é um erro do FFmpeg, não uma condição de reunião
                 return # Encerra o gerador se o FFmpeg parar inesperadamente
 
+            if tentar_reingressar(page):
+                yield {"event": "tentou_reingressar"}
+                continue
+            
             yield {"event": "recording", "elapsed": int(time.time() - inicio_gravacao_ts)}
             time.sleep(5) 
 
