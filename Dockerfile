@@ -1,6 +1,6 @@
 # 1. Base Image
 # Usar uma imagem Python slim baseada no Debian Buster
-FROM python:3.9-slim-buster
+FROM python:3.9-slim-bookworm
 
 # Definir variáveis de ambiente para evitar prompts interativos durante a instalação de pacotes
 ENV DEBIAN_FRONTEND=noninteractive
