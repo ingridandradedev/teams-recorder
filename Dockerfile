@@ -71,7 +71,6 @@ RUN playwright install chromium
 # Application Default Credentials (ADC) com uma conta de serviço associada à VM,
 # em vez de embutir arquivos de chave na imagem.
 # Esta linha está incluída porque o app/uploader.py espera o arquivo neste local.
-COPY app/maria-457717-9fa8d402e552.json ./app/
 COPY app/ ./app/
 COPY run.sh ./
 

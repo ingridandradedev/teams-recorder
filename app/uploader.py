@@ -1,9 +1,8 @@
 from google.cloud import storage
-from google.oauth2 import service_account
 import os
+from app.gcp_secrets import get_credentials_from_secret  # ADICIONE ESTA LINHA
 
 BUCKET_NAME = "projeto-maria-1-0-pecege"
-CREDENTIALS_PATH = os.path.join(os.path.dirname(__file__), "maria-457717-9fa8d402e552.json")
 
 def enviar_para_gcs(nome_arquivo: str, destino: str = "") -> tuple[str, str]:
     """
@@ -15,8 +14,8 @@ def enviar_para_gcs(nome_arquivo: str, destino: str = "") -> tuple[str, str]:
     try:
         blob_name = f"{destino.rstrip('/')}/{nome_arquivo}" if destino else nome_arquivo
 
-        # Carrega as credenciais do arquivo JSON
-        credentials = service_account.Credentials.from_service_account_file(CREDENTIALS_PATH)
+        # Carrega as credenciais do Secret Manager
+        credentials = get_credentials_from_secret()  # ALTERADO AQUI
         storage_client = storage.Client(credentials=credentials)
         bucket = storage_client.bucket(BUCKET_NAME)
         blob = bucket.blob(blob_name)

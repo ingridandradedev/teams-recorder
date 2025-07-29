@@ -3,4 +3,5 @@ uvicorn
 google-cloud-storage
 playwright
 google-cloud-secret-manager
+google-auth
 google-cloud-logging
