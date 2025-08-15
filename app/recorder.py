@@ -195,65 +195,188 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
             try:
                 full_selector = f"{selector}:not([disabled])"
                 yield {"event": "attempting_join_button", "selector_description": description, "selector": full_selector}
-                page.wait_for_selector(full_selector, timeout=45000) 
-                page.click(full_selector, timeout=15000) 
-                join_now_button_clicked = True
-                yield {"event": "clicked_join_button", "selector_used": description}
-                tirar_screenshot_e_upload(page, f"after_clicking_join_button_{description.replace(' ', '_').lower()}")
-                break 
+                
+                # Aguardar um pouco antes de procurar o botão
+                print(f"🔍 Procurando botão: {description}")
+                page.wait_for_timeout(3000)  # Aguarda 3 segundos para a página estabilizar
+                
+                # Tentar encontrar o botão com timeout menor e melhor tratamento
+                try:
+                    page.wait_for_selector(full_selector, timeout=30000)  # Reduzido de 45s para 30s
+                    print(f"✅ Botão encontrado: {description}")
+                    
+                    # Tirar screenshot antes de clicar
+                    tirar_screenshot_e_upload(page, f"before_clicking_join_button_{description.replace(' ', '_').lower()}")
+                    
+                    page.click(full_selector, timeout=15000) 
+                    join_now_button_clicked = True
+                    yield {"event": "clicked_join_button", "selector_used": description}
+                    tirar_screenshot_e_upload(page, f"after_clicking_join_button_{description.replace(' ', '_').lower()}")
+                    print(f"✅ Botão clicado com sucesso: {description}")
+                    break
+                    
+                except PlaywrightTimeoutError as timeout_error:
+                    print(f"⏰ Timeout aguardando botão: {description} - {timeout_error}")
+                    yield {"event": "join_button_wait_timeout", "selector_description": description, "timeout": "30s"}
+                    tirar_screenshot_e_upload(page, f"timeout_waiting_join_button_{description.replace(' ', '_').lower()}")
+                    continue  # Tenta o próximo seletor
+                    
             except PlaywrightTimeoutError as e_join_timeout:
+                print(f"⏰ Timeout no botão {description}: {e_join_timeout}")
                 yield {"event": "join_button_attempt_timeout", "selector_description": description, "error_detail": str(e_join_timeout)}
                 tirar_screenshot_e_upload(page, f"error_timeout_join_button_{description.replace(' ', '_').lower()}")
             except Exception as e_join:
+                print(f"❌ Erro no botão {description}: {e_join}")
                 yield {"event": "join_button_attempt_failed", "selector_description": description, "error_detail": str(e_join)}
                 tirar_screenshot_e_upload(page, f"error_failed_join_button_{description.replace(' ', '_').lower()}")
         
         if not join_now_button_clicked:
             error_message = "Failed to find or click any suitable 'Join' button after trying all options."
+            print(f"❌ {error_message}")
             yield {"event": "error", "type": "join_button_error", "detail": error_message}
             tirar_screenshot_e_upload(page, "error_all_join_buttons_failed")
-            return
+            
+            # Tentar seletores alternativos antes de desistir
+            alternative_selectors = [
+                ('button[data-tid="prejoin-join-button"]', "Botão join via data-tid"),
+                ('button:has-text("Entrar")', "Botão Entrar"),
+                ('button:has-text("Enter")', "Botão Enter"),
+                ('[data-tid*="join"]', "Elemento com data-tid contendo join")
+            ]
+            
+            yield {"event": "trying_alternative_join_selectors"}
+            print("🔄 Tentando seletores alternativos...")
+            
+            for alt_selector, alt_description in alternative_selectors:
+                try:
+                    if page.is_visible(alt_selector, timeout=5000):
+                        print(f"🎯 Encontrado seletor alternativo: {alt_description}")
+                        yield {"event": "alternative_join_button_found", "selector": alt_description}
+                        page.click(alt_selector, timeout=10000)
+                        join_now_button_clicked = True
+                        yield {"event": "clicked_alternative_join_button", "selector_used": alt_description}
+                        tirar_screenshot_e_upload(page, f"after_clicking_alternative_join_{alt_description.replace(' ', '_').lower()}")
+                        break
+                except Exception as e_alt:
+                    print(f"⚠️ Seletor alternativo falhou {alt_description}: {e_alt}")
+                    continue
+            
+            if not join_now_button_clicked:
+                # Última tentativa: procurar qualquer botão que possa ser de join
+                yield {"event": "desperate_join_button_search"}
+                print("🆘 Busca desesperada por botão de join...")
+                try:
+                    # Pegar todos os botões visíveis e tentar encontrar um que faça sentido
+                    buttons = page.query_selector_all('button:visible')
+                    for i, button in enumerate(buttons):
+                        try:
+                            text = button.inner_text().lower()
+                            if any(word in text for word in ['join', 'ingressar', 'entrar', 'participar']):
+                                print(f"🎯 Tentando botão com texto: {text}")
+                                button.click(timeout=5000)
+                                join_now_button_clicked = True
+                                yield {"event": "clicked_desperate_join_button", "button_text": text}
+                                tirar_screenshot_e_upload(page, f"after_desperate_join_click_{i}")
+                                break
+                        except Exception:
+                            continue
+                except Exception as e_desperate:
+                    print(f"❌ Busca desesperada falhou: {e_desperate}")
+            
+            if not join_now_button_clicked:
+                yield {"event": "error", "type": "complete_join_button_failure", "detail": "Completely failed to find and click any join button"}
+                return
 
         yield {"event": "waiting_for_organizer_permission"}
+        print("🚪 Verificando se está no lobby...")
+        
         lobby_message_selectors = [
             "text='Oi, MarIA! Aguarde até que o organizador permita que você entre.'", # PT
-            "text='Hi, MarIA! Waiting for the host to let you in.'" # EN (example)
+            "text='Hi, MarIA! Waiting for the host to let you in.'", # EN
+            "text='Aguarde até que o organizador permita que você entre'", # PT variação
+            "text='Waiting for the host to let you in'", # EN variação
+            "[data-tid*='lobby']", # Qualquer elemento com lobby no data-tid
+            "text*='aguarde'", # Qualquer texto contendo aguarde
+            "text*='waiting'" # Qualquer texto contendo waiting
         ]
         
         in_lobby_or_failed_to_join = True
+        lobby_timeout_seconds = 300  # 5 minutos máximo no lobby
+        
         try:
             lobby_message_is_currently_visible = False
             visible_lobby_selector = None
+            
+            # Verificação inicial do lobby com timeout menor
+            print("🔍 Verificação inicial do lobby...")
             for sel in lobby_message_selectors:
-                if page.is_visible(sel, timeout=5000): 
-                    lobby_message_is_currently_visible = True
-                    visible_lobby_selector = sel
-                    yield {"event": "lobby_message_detected", "selector": sel}
-                    tirar_screenshot_e_upload(page, "lobby_message_detected")
-                    break
+                try:
+                    if page.is_visible(sel, timeout=3000):  # 3 segundos por seletor
+                        lobby_message_is_currently_visible = True
+                        visible_lobby_selector = sel
+                        print(f"🚪 Detectado no lobby com seletor: {sel}")
+                        yield {"event": "lobby_message_detected", "selector": sel}
+                        tirar_screenshot_e_upload(page, "lobby_message_detected")
+                        break
+                except Exception as e_lobby_check:
+                    print(f"⚠️ Erro verificando seletor de lobby {sel}: {e_lobby_check}")
+                    continue
             
             if lobby_message_is_currently_visible and visible_lobby_selector:
-                yield {"event": "waiting_for_lobby_message_to_disappear", "selector": visible_lobby_selector}
-                page.wait_for_selector(visible_lobby_selector, state="hidden", timeout=300000) 
-                yield {"event": "lobby_message_disappeared_or_timed_out"}
-                in_lobby_or_failed_to_join = False 
-            else:
-                yield {"event": "no_immediate_lobby_message_checking_meeting_state"}
-                page.wait_for_timeout(15000) 
+                print(f"⏳ Aguardando liberação do lobby (máximo {lobby_timeout_seconds}s)...")
+                yield {"event": "waiting_for_lobby_message_to_disappear", "selector": visible_lobby_selector, "max_wait": lobby_timeout_seconds}
                 
+                try:
+                    page.wait_for_selector(visible_lobby_selector, state="hidden", timeout=lobby_timeout_seconds * 1000)
+                    print("✅ Liberado do lobby!")
+                    yield {"event": "lobby_message_disappeared"}
+                    in_lobby_or_failed_to_join = False
+                except PlaywrightTimeoutError:
+                    print(f"⏰ Timeout no lobby após {lobby_timeout_seconds}s")
+                    yield {"event": "lobby_timeout", "waited_seconds": lobby_timeout_seconds}
+                    tirar_screenshot_e_upload(page, "lobby_timeout")
+                    # Continua mesmo com timeout, talvez esteja na reunião
+                    in_lobby_or_failed_to_join = False
+                    
+            else:
+                print("🔍 Não detectado no lobby inicialmente, aguardando para verificar...")
+                yield {"event": "no_immediate_lobby_message_checking_meeting_state"}
+                page.wait_for_timeout(10000)  # Aguarda 10 segundos
+                
+                # Segunda verificação após aguardar
                 still_in_lobby_after_wait = False
+                print("🔍 Segunda verificação do lobby...")
                 for sel in lobby_message_selectors:
-                    if page.is_visible(sel, timeout=5000):
-                        yield {"event": "lobby_message_appeared_late", "selector": sel}
-                        tirar_screenshot_e_upload(page, "lobby_message_appeared_late")
-                        still_in_lobby_after_wait = True 
-                        break
+                    try:
+                        if page.is_visible(sel, timeout=2000):
+                            print(f"🚪 Lobby detectado na segunda verificação: {sel}")
+                            yield {"event": "lobby_message_appeared_late", "selector": sel}
+                            tirar_screenshot_e_upload(page, "lobby_message_appeared_late")
+                            still_in_lobby_after_wait = True
+                            
+                            # Aguardar liberação com timeout menor
+                            try:
+                                page.wait_for_selector(sel, state="hidden", timeout=180000)  # 3 minutos
+                                print("✅ Liberado do lobby na segunda tentativa!")
+                                yield {"event": "lobby_released_second_check"}
+                                in_lobby_or_failed_to_join = False
+                            except PlaywrightTimeoutError:
+                                print("⏰ Timeout na segunda verificação do lobby")
+                                yield {"event": "lobby_timeout_second_check"}
+                                in_lobby_or_failed_to_join = False  # Continua mesmo assim
+                            break
+                    except Exception as e_second_check:
+                        print(f"⚠️ Erro na segunda verificação: {e_second_check}")
+                        continue
+                        
                 if not still_in_lobby_after_wait:
-                     in_lobby_or_failed_to_join = False
+                    print("✅ Não está no lobby, provavelmente na reunião")
+                    in_lobby_or_failed_to_join = False
 
             if in_lobby_or_failed_to_join and not page.is_closed():
-                 yield {"event": "lobby_status_uncertain_proceeding_to_record"}
-                 tirar_screenshot_e_upload(page, "lobby_status_uncerto")
+                print("⚠️ Status do lobby incerto, prosseguindo...")
+                yield {"event": "lobby_status_uncertain_proceeding_to_record"}
+                tirar_screenshot_e_upload(page, "lobby_status_uncertain")
 
         except PlaywrightTimeoutError as pte_lobby: 
             yield {"event": "error", "type": "lobby_timeout", "detail": f"Timed out waiting for lobby message to change state: {str(pte_lobby)}"}
