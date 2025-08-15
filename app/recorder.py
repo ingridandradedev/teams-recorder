@@ -2,12 +2,18 @@ import subprocess
 import time
 import tempfile
 import shutil
+import signal
+import sys
+import logging
 from datetime import datetime
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from app.uploader import enviar_para_gcs
 import threading
 import os
 import traceback
+
+# Configurar logging
+logger = logging.getLogger(__name__)
 
 NOME_USUARIO = "MarIA"  # Nome do bot
 DURACAO_MAXIMA = 10800  # 3 horas em segundos
@@ -270,41 +276,59 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
         yield {"event": "recording_started_ffmpeg_process_launched"}
 
         while True:
+            # Verificar primeiro se foi parado pelo usuário
             if stop_event.is_set():
+                print("🛑 Parada solicitada pelo usuário")
                 yield {"event": "stopped_by_user", "stage": "recording"}
                 break
+                
+            # Verificar duração máxima
             if (time.time() - inicio_gravacao_ts) > DURACAO_MAXIMA:
+                print(f"🛑 Duração máxima atingida: {DURACAO_MAXIMA}s")
                 yield {"event": "auto_stopped_max_duration", "stage": "recording"}
-                auto_stopped_conditions_were_met = True # Considerar como uma condição de parada
+                auto_stopped_conditions_were_met = True
                 break
             
+            # Verificar se a página foi fechada
             if page.is_closed():
+                print("🛑 Página do browser foi fechada inesperadamente")
                 yield {"event": "error", "type": "page_closed_unexpectedly", "detail": "Browser page was closed during recording."}
                 try:
                     if page and not page.is_closed(): 
                          tirar_screenshot_e_upload(page, "error_page_closed_during_recording")
                 except Exception:
-                    print("Could not take screenshot, page was already closed.")
-                auto_stopped_conditions_were_met = True # Página fechada é uma condição de parada
+                    print("Não foi possível tirar screenshot, página já estava fechada.")
+                auto_stopped_conditions_were_met = True
                 break
 
+            # Verificar condições de encerramento da reunião
             if verificar_condicoes_encerramento(page): 
+                print("🛑 Condições de encerramento detectadas")
                 yield {"event": "auto_stopped_conditions_met", "stage": "recording"}
-                auto_stopped_conditions_were_met = True # Define a flag aqui
+                auto_stopped_conditions_were_met = True
                 tirar_screenshot_e_upload(page, "conditions_met_for_stop")
                 break
             
+            # Verificar se o FFmpeg terminou inesperadamente
             if proc.poll() is not None: 
+                print(f"🛑 Processo FFmpeg terminou inesperadamente com código: {proc.returncode}")
                 yield {"event": "error", "type": "ffmpeg_terminated_unexpectedly", "detail": f"FFmpeg process exited with code {proc.returncode}"}
-                if page and not page.is_closed(): tirar_screenshot_e_upload(page, "error_ffmpeg_terminated")
-                # Não definimos auto_stopped_conditions_were_met aqui, pois é um erro do FFmpeg, não uma condição de reunião
-                return # Encerra o gerador se o FFmpeg parar inesperadamente
+                if page and not page.is_closed(): 
+                    tirar_screenshot_e_upload(page, "error_ffmpeg_terminated")
+                # Não definimos auto_stopped_conditions_were_met aqui, pois é um erro do FFmpeg
+                break  # Sai do loop, mas não retorna (vai para finally)
 
+            # Tentar reingressar se necessário
             if tentar_reingressar(page):
+                print("🔄 Tentativa de reingresso realizada")
                 yield {"event": "tentou_reingressar"}
                 continue
             
-            yield {"event": "recording", "elapsed": int(time.time() - inicio_gravacao_ts)}
+            # Status normal da gravação
+            elapsed_time = int(time.time() - inicio_gravacao_ts)
+            yield {"event": "recording", "elapsed": elapsed_time}
+            
+            # Aguarda antes da próxima verificação
             time.sleep(5) 
 
     except PlaywrightTimeoutError as pte:
@@ -323,25 +347,46 @@ def gravar_reuniao_stream(link_reuniao_original: str, stop_event: threading.Even
         ffmpeg_exit_code = None
         if proc: 
             if proc.poll() is None: 
-                print("Terminating FFmpeg process...")
-                proc.terminate() # Envia SIGTERM
+                print("🛑 Terminando processo FFmpeg...")
+                yield {"event": "terminating_ffmpeg_process"}
+                
+                # Primeiro tenta SIGTERM (terminação graceful)
                 try:
-                    proc.wait(timeout=10) # Espera FFmpeg finalizar
+                    proc.terminate()
+                    print("📤 SIGTERM enviado ao FFmpeg, aguardando finalização...")
+                    proc.wait(timeout=10)  # Espera 10 segundos para terminação graceful
                     ffmpeg_exit_code = proc.returncode
-                    print(f"FFmpeg terminated with code: {ffmpeg_exit_code}")
+                    print(f"✅ FFmpeg terminou graciosamente com código: {ffmpeg_exit_code}")
                 except subprocess.TimeoutExpired:
-                    print("FFmpeg did not terminate gracefully, killing.")
-                    proc.kill() # Envia SIGKILL
-                    proc.wait() # Espera FFmpeg finalizar após kill
-                    ffmpeg_exit_code = proc.returncode 
-                    print(f"FFmpeg killed, exit code: {ffmpeg_exit_code}")
+                    print("⚠️ FFmpeg não terminou graciosamente em 10s, forçando terminação...")
+                    proc.kill()  # Força terminação com SIGKILL
+                    try:
+                        proc.wait(timeout=5)  # Espera mais 5 segundos após SIGKILL
+                        ffmpeg_exit_code = proc.returncode 
+                        print(f"🔨 FFmpeg foi forçado a terminar com código: {ffmpeg_exit_code}")
+                    except subprocess.TimeoutExpired:
+                        print("❌ FFmpeg não respondeu nem ao SIGKILL!")
+                        # Processo pode estar em estado zumbi
+                        ffmpeg_exit_code = -9  # Código artificial para indicar kill forçado
                 except Exception as e_proc_term:
-                    print(f"Error during FFmpeg termination: {e_proc_term}")
-                    # ffmpeg_exit_code pode permanecer None ou ter um valor anterior se wait falhou
+                    print(f"❌ Erro durante terminação do FFmpeg: {e_proc_term}")
+                    # Tenta kill como último recurso
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=3)
+                        ffmpeg_exit_code = proc.returncode
+                        print(f"🔨 FFmpeg foi morto como último recurso, código: {ffmpeg_exit_code}")
+                    except:
+                        print("❌ Falha completa na terminação do FFmpeg")
+                        ffmpeg_exit_code = -1
             else: 
                  ffmpeg_exit_code = proc.returncode
-                 print(f"FFmpeg process already terminated with code: {ffmpeg_exit_code} before explicit stop.")
+                 print(f"✅ Processo FFmpeg já havia terminado com código: {ffmpeg_exit_code}")
+            
             yield {"event": "recording_process_handled", "ffmpeg_exit_code": ffmpeg_exit_code}
+        else:
+            print("ℹ️ Nenhum processo FFmpeg para terminar")
+            yield {"event": "no_ffmpeg_process_to_terminate"}
 
         if page and not page.is_closed():
             try:
