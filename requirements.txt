@@ -3,5 +3,5 @@ uvicorn
 google-cloud-storage
 playwright
 google-cloud-secret-manager
-google-auth
+google-auth>=2.0.0
 google-cloud-logging
