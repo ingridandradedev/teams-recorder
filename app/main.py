@@ -75,7 +75,7 @@ async def lifespan(app: FastAPI):
     logger.info("✅ API encerrada com sucesso")
 
 app = FastAPI(
-    title="Teams Recorder API",
+    title="MarIA Recorder API",
     description="API para gravação de reuniões do Microsoft Teams com suporte a múltiplas gravações simultâneas",
     version="2.1.0",
     lifespan=lifespan
