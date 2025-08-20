@@ -563,13 +563,16 @@ async def gravar_reuniao_stream_async(
         except Exception:
             logger.debug("Upload worker did not finish cleanly")
 
-        # Merge segments into final MP4
-        final_filename = f"{seg_basename}.mp4"
-        try:
-            merge_segments_to_mp4(seg_dir, seg_basename, final_filename)
-            logger.info(f"✅ Segments merged into {final_filename}")
-        except Exception as e:
-            logger.error(f"❌ Erro ao unir segmentos: {e}")
+        # Merge segments into final MP4 (only if recording actually started and seg_basename exists)
+        if 'seg_basename' in locals() and 'seg_dir' in locals():
+            final_filename = f"{seg_basename}.mp4"
+            try:
+                merge_segments_to_mp4(seg_dir, seg_basename, final_filename)
+                logger.info(f"✅ Segments merged into {final_filename}")
+            except Exception as e:
+                logger.error(f"❌ Erro ao unir segmentos: {e}")
+        else:
+            logger.info("ℹ️ Nenhum segmento para unir (gravação não foi iniciada ou falhou antes de criar segmentos)")
 
         # Fechar recursos do Playwright
         try:

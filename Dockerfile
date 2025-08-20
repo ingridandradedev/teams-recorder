@@ -66,9 +66,18 @@ COPY requirements.txt ./
 # O --no-cache-dir é usado para reduzir o tamanho da imagem
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 6. Instalar Navegadores Playwright
-# As dependências de SO foram instaladas manualmente acima. Use o módulo python para garantir que o console script exista.
-RUN python -m playwright install chromium
+# Criar um usuário não-root para executar a aplicação (melhora segurança)
+RUN groupadd -r appuser \
+    && useradd -r -g appuser -d /home/appuser -m -s /sbin/nologin appuser
+
+# Garantir que os navegadores Playwright instalados serão colocados em um
+# diretório acessível ao usuário não-root. Definir o caminho global antes da
+# instalação garante que os navegadores sejam instalados em /ms-playwright.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN mkdir -p /ms-playwright && chown -R appuser:appuser /ms-playwright
+
+# 6. Instalar Navegadores Playwright (agora que o diretório existe)
+RUN python -m playwright install chromium && chown -R appuser:appuser /ms-playwright
 
 # 7. Copiar Código da Aplicação
 # NOTA DE SEGURANÇA: Não copie arquivos de credenciais sensíveis para a imagem.
@@ -78,13 +87,8 @@ RUN python -m playwright install chromium
 COPY app/ ./app/
 COPY run.sh ./
 
-# 8. Tornar o run.sh executável
-RUN chmod +x ./run.sh
-
-# Criar um usuário não-root para executar a aplicação (melhora segurança)
-RUN groupadd -r appuser \
-    && useradd -r -g appuser -d /home/appuser -m -s /sbin/nologin appuser \
-    && chown -R appuser:appuser /app
+# 8. Tornar o run.sh executável e ajustar permissões
+RUN chmod +x ./run.sh && chown -R appuser:appuser /app
 
 # 9. Expor a Porta
 # A aplicação FastAPI, conforme o run.sh, roda na porta 8000
