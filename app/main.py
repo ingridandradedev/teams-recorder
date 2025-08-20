@@ -94,6 +94,9 @@ async def verify_api_key(x_api_token: str = Header(None, description="Seu token 
 @app.get("/gravar", response_class=StreamingResponse)
 async def iniciar_gravacao(
     url: str = Query(..., description="URL da reunião do Teams"),
+    segment_time: int = Query(60, description="Segundos por segmento (ex: 60 ou 300)"),
+    upload_dest: str = Query("recordings-segments", description="Pasta destino no bucket para segmentos"),
+    record_video: bool = Query(True, description="Se deve capturar vídeo além do áudio"),
     api_key: str = Depends(verify_api_key)
 ):
     """Inicia uma nova gravação usando Playwright Async API para suporte a múltiplas gravações."""
@@ -117,7 +120,7 @@ async def iniciar_gravacao(
             from app.async_recorder import gravar_reuniao_stream_async
             
             # Usar async generator
-            async for msg in gravar_reuniao_stream_async(url, stop_event):
+            async for msg in gravar_reuniao_stream_async(url, stop_event, segment_time=segment_time, upload_dest=upload_dest, record_video=record_video):
                 payload = {**msg, "recording_id": recording_id}
                 yield f"data: {json.dumps(payload)}\n\n"
                 

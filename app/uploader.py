@@ -57,7 +57,13 @@ def enviar_para_gcs(nome_arquivo: str, destino: str = "") -> tuple[str, str]:
 
         # Fazer o upload do arquivo
         logger.info(f"🔄 Fazendo upload do arquivo: {nome_arquivo} -> {blob_name}")
+        # If nome_arquivo is a path, use it directly
         blob.upload_from_filename(nome_arquivo)
+
+        # Try to set content-type for common media
+        if nome_arquivo.lower().endswith('.mp4'):
+            blob.content_type = 'video/mp4'
+            blob.patch()
 
         # Gerar URLs
         public_url = f"https://storage.googleapis.com/{BUCKET_NAME}/{blob_name}"

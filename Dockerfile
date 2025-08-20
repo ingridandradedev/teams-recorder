@@ -48,6 +48,7 @@ RUN apt-get update && \
     libappindicator3-1 \
     libu2f-udev \
     libvulkan1 \
+    ca-certificates \
     # Limpeza
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -66,20 +67,24 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 6. Instalar Navegadores Playwright
-# As dependências de SO foram instaladas manualmente acima
-RUN playwright install chromium
+# As dependências de SO foram instaladas manualmente acima. Use o módulo python para garantir que o console script exista.
+RUN python -m playwright install chromium
 
 # 7. Copiar Código da Aplicação
-# ATENÇÃO: O arquivo de credenciais JSON (maria-457717-9fa8d402e552.json) está sendo copiado.
-# Para ambientes de produção no Google Cloud, é ALTAMENTE RECOMENDADO usar
-# Application Default Credentials (ADC) com uma conta de serviço associada à VM,
-# em vez de embutir arquivos de chave na imagem.
-# Esta linha está incluída porque o app/uploader.py espera o arquivo neste local.
+# NOTA DE SEGURANÇA: Não copie arquivos de credenciais sensíveis para a imagem.
+# Use Application Default Credentials (ADC) em produção ou monte o arquivo de
+# chave no tempo de execução (ex.: via secret/volume) e defina
+# GOOGLE_APPLICATION_CREDENTIALS apontando para o caminho montado.
 COPY app/ ./app/
 COPY run.sh ./
 
 # 8. Tornar o run.sh executável
 RUN chmod +x ./run.sh
+
+# Criar um usuário não-root para executar a aplicação (melhora segurança)
+RUN groupadd -r appuser \
+    && useradd -r -g appuser -d /home/appuser -m -s /sbin/nologin appuser \
+    && chown -R appuser:appuser /app
 
 # 9. Expor a Porta
 # A aplicação FastAPI, conforme o run.sh, roda na porta 8000
@@ -87,4 +92,7 @@ EXPOSE 8000
 
 # 10. Comando para executar a aplicação
 # O script run.sh lida com a inicialização do PulseAudio, Xvfb e Uvicorn.
+# Trocar para usuário não-root para executar o servidor
+USER appuser
+
 CMD ["./run.sh"]

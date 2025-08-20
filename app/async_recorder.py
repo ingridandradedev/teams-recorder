@@ -9,6 +9,7 @@ import logging
 from datetime import datetime
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from app.uploader import enviar_para_gcs
+from app import segment_db
 
 # Configurar logging
 logger = logging.getLogger(__name__)
@@ -53,6 +54,135 @@ def iniciar_gravacao_ffmpeg(nome_arquivo):
         nome_arquivo
     ]
     return subprocess.Popen(comando)
+
+
+def iniciar_gravacao_segmentada(basename: str, segment_time: int = 60, video_size=(1280, 720)):
+    """
+    Inicia FFmpeg para capturar vídeo (X11) + áudio (PulseAudio) em segmentos .ts.
+
+    Returns: (proc, seg_dir, basename)
+    """
+    seg_dir = f"segments_{basename}"
+    os.makedirs(seg_dir, exist_ok=True)
+
+    display = os.getenv("DISPLAY", ":99.0")
+    audio_dev = DISPOSITIVO_AUDIO
+    width, height = video_size
+
+    out_pattern = os.path.join(seg_dir, f"{basename}_%03d.ts")
+
+    comando = [
+        "ffmpeg",
+        "-y",
+        # video input (X11)
+        "-f", "x11grab",
+        "-video_size", f"{width}x{height}",
+        "-i", display,
+        # audio input (Pulse)
+        "-f", "pulse",
+        "-i", audio_dev,
+        # encoding
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        # segmentation
+        "-f", "segment",
+        "-segment_time", str(segment_time),
+        "-reset_timestamps", "1",
+        "-segment_format", "mpegts",
+        out_pattern
+    ]
+
+    logger.info(f"🎥 Iniciando gravação segmentada: dir={seg_dir} pattern={out_pattern}")
+    proc = subprocess.Popen(comando, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return proc, seg_dir, basename
+
+
+async def _upload_segments_worker(seg_dir: str, uploaded: set, stop_event: asyncio.Event, upload_dest: str = "recordings-segments"):
+    """Background task that uploads completed .ts segments to GCS with DB tracking and retries."""
+    loop = asyncio.get_event_loop()
+    db_path = os.getenv("SEGMENT_DB_PATH", ".segments.db")
+    segment_db.init_db(db_path)
+    while not stop_event.is_set():
+        try:
+            files = sorted([f for f in os.listdir(seg_dir) if f.endswith('.ts')])
+        except FileNotFoundError:
+            await asyncio.sleep(1)
+            continue
+
+        for fname in files:
+            # Ensure DB has record
+            segment_db.ensure_segment_record(seg_dir, fname, db_path)
+            if segment_db.is_uploaded(seg_dir, fname, db_path):
+                uploaded.add(fname)
+                continue
+
+            path = os.path.join(seg_dir, fname)
+            # ensure the file is stable (not being written)
+            try:
+                size1 = os.path.getsize(path)
+                await asyncio.sleep(1)
+                size2 = os.path.getsize(path)
+            except FileNotFoundError:
+                continue
+            if size1 != size2:
+                # still being written
+                continue
+
+            # attempt upload with exponential backoff
+            attempts = 0
+            max_attempts = 5
+            success = False
+            while attempts < max_attempts and not success:
+                attempts = segment_db.increment_attempts(seg_dir, fname, db_path)
+                def _upload():
+                    try:
+                        public_url, gs_uri = enviar_para_gcs(path, upload_dest)
+                        return True, gs_uri
+                    except Exception as e:
+                        return False, str(e)
+
+                ok, result = await loop.run_in_executor(None, _upload)
+                if ok:
+                    segment_db.mark_uploaded(seg_dir, fname, result, db_path)
+                    uploaded.add(fname)
+                    logger.info(f"✅ Segment uploaded: {path}")
+                    success = True
+                    break
+                else:
+                    segment_db.set_last_error(seg_dir, fname, str(result), db_path)
+                    wait = min(2 ** attempts, 30)
+                    logger.warning(f"⚠️ Upload failed for {fname}, attempt {attempts}, retrying in {wait}s: {result}")
+                    await asyncio.sleep(wait)
+
+        await asyncio.sleep(2)
+
+
+def merge_segments_to_mp4(seg_dir: str, basename: str, out_file: str):
+    """Merges .ts segments (in seg_dir) into a single MP4 file out_file."""
+    files = sorted([f for f in os.listdir(seg_dir) if f.endswith('.ts')])
+    if not files:
+        raise RuntimeError("No segments found to merge")
+
+    list_txt = os.path.join(seg_dir, "concat_list.txt")
+    with open(list_txt, 'w', encoding='utf-8') as f:
+        for fname in files:
+            f.write(f"file '{os.path.join(seg_dir, fname)}'\n")
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", list_txt,
+        "-c", "copy",
+        out_file
+    ]
+    logger.info(f"🔗 Merging {len(files)} segments into {out_file}")
+    subprocess.check_call(cmd)
+    return out_file
 
 async def tirar_screenshot_e_upload_async(page, etapa):
     """Tira screenshot e faz upload de forma assíncrona."""
@@ -164,7 +294,13 @@ def terminar_ffmpeg_robusto(proc):
         logger.error(f"❌ Erro inesperado ao terminar FFmpeg: {e}")
         return -1
 
-async def gravar_reuniao_stream_async(link_reuniao_original: str, stop_event: asyncio.Event):
+async def gravar_reuniao_stream_async(
+    link_reuniao_original: str,
+    stop_event: asyncio.Event,
+    segment_time: int = 60,
+    upload_dest: str = "recordings-segments",
+    record_video: bool = True
+):
     """
     Função principal de gravação usando Playwright Async API.
     Suporta múltiplas gravações simultâneas sem conflitos.
@@ -350,10 +486,17 @@ async def gravar_reuniao_stream_async(link_reuniao_original: str, stop_event: as
         else:
             logger.info("✅ Não está no lobby, provavelmente na reunião")
 
-        # Iniciar gravação FFmpeg
+        # Iniciar gravação segmentada (vídeo + áudio)
         yield {"event": "starting_recording"}
-        proc = iniciar_gravacao_ffmpeg(nome_arquivo)
-        logger.info(f"🎙️ Gravação iniciada (PID: {proc.pid})")
+        seg_basename = datetime.now().strftime('gravacao_%Y%m%d_%H%M%S')
+        # segment_time parameter overrides env
+        proc, seg_dir, seg_basename = iniciar_gravacao_segmentada(seg_basename, segment_time)
+        logger.info(f"🎥 Gravação segmentada iniciada (PID: {proc.pid}) dir={seg_dir}")
+
+        # Start background uploader for segments
+        uploaded = set()
+        upload_stop_event = asyncio.Event()
+        upload_task = asyncio.create_task(_upload_segments_worker(seg_dir, uploaded, upload_stop_event, upload_dest))
 
         # Loop principal de gravação com verificações assíncronas
         inicio_gravacao = time.time()
@@ -410,7 +553,23 @@ async def gravar_reuniao_stream_async(link_reuniao_original: str, stop_event: as
         # Terminar FFmpeg primeiro
         if proc:
             ffmpeg_exit_code = terminar_ffmpeg_robusto(proc)
-            logger.info(f"🎙️ FFmpeg terminado com código: {ffmpeg_exit_code}")
+            logger.info(f"� FFmpeg (segmenter) terminado com código: {ffmpeg_exit_code}")
+
+        # Stop upload worker and wait it finishes
+        try:
+            upload_stop_event.set()
+            if 'upload_task' in locals():
+                await asyncio.wait_for(upload_task, timeout=10)
+        except Exception:
+            logger.debug("Upload worker did not finish cleanly")
+
+        # Merge segments into final MP4
+        final_filename = f"{seg_basename}.mp4"
+        try:
+            merge_segments_to_mp4(seg_dir, seg_basename, final_filename)
+            logger.info(f"✅ Segments merged into {final_filename}")
+        except Exception as e:
+            logger.error(f"❌ Erro ao unir segmentos: {e}")
 
         # Fechar recursos do Playwright
         try:
@@ -441,48 +600,64 @@ async def gravar_reuniao_stream_async(link_reuniao_original: str, stop_event: as
         except Exception as e:
             logger.error(f"❌ Erro ao parar Playwright: {e}")
 
-        # Upload do arquivo final se existir
-        if os.path.exists(nome_arquivo):
+        # Upload do arquivo final (prefere arquivo MP4 consolidado)
+        upload_target = None
+        if 'final_filename' in locals() and os.path.exists(final_filename):
+            upload_target = final_filename
+        elif os.path.exists(nome_arquivo):
+            upload_target = nome_arquivo
+
+        if upload_target:
             try:
-                logger.info(f"📤 Fazendo upload do arquivo: {nome_arquivo}")
-                
+                logger.info(f"📤 Fazendo upload do arquivo: {upload_target}")
+
                 # Upload em thread separada para não bloquear
                 def upload_final():
                     try:
-                        public_url, gs_uri = enviar_para_gcs(nome_arquivo)
+                        public_url, gs_uri = enviar_para_gcs(upload_target)
                         logger.info(f"✅ Upload concluído: {public_url}")
-                        
+
                         # Remover arquivo local após upload
-                        if os.path.exists(nome_arquivo):
-                            os.remove(nome_arquivo)
-                            logger.info(f"🗑️ Arquivo local removido: {nome_arquivo}")
-                        
+                        if os.path.exists(upload_target):
+                            os.remove(upload_target)
+                            logger.info(f"🗑️ Arquivo local removido: {upload_target}")
+
+                        # Optionally remove segments directory
+                        try:
+                            if 'seg_dir' in locals() and os.path.isdir(seg_dir):
+                                for f in os.listdir(seg_dir):
+                                    os.remove(os.path.join(seg_dir, f))
+                                os.rmdir(seg_dir)
+                                logger.info(f"🧹 Segments dir removed: {seg_dir}")
+                        except Exception:
+                            logger.debug("Could not remove segments dir cleanly")
+
                         return public_url, gs_uri
                     except Exception as e:
                         logger.error(f"❌ Erro no upload final: {e}")
                         return None, None
-                
+
                 loop = asyncio.get_event_loop()
                 public_url, gs_uri = await loop.run_in_executor(None, upload_final)
-                
+
                 if public_url:
                     yield {
                         "event": "recording_completed" if auto_stopped_conditions_were_met else "recording_stopped",
                         "file_url": public_url,
                         "gs_uri": gs_uri,
-                        "filename": nome_arquivo,
+                        "filename": upload_target,
                         "auto_stopped": auto_stopped_conditions_were_met,
                         "ffmpeg_exit_code": ffmpeg_exit_code
                     }
                 else:
-                    yield {"event": "upload_failed", "filename": nome_arquivo}
-                    
+                    yield {"event": "upload_failed", "filename": upload_target}
+
             except Exception as e:
                 logger.error(f"❌ Erro no processo de upload: {e}")
                 yield {"event": "upload_error", "detail": str(e)}
         else:
-            logger.warning(f"⚠️ Arquivo não encontrado para upload: {nome_arquivo}")
-            yield {"event": "no_file_to_upload", "filename": nome_arquivo}
+            logger.warning("⚠️ Nenhum arquivo final encontrado para upload")
+            yield {"event": "no_file_to_upload"}
 
         yield {"event": "cleanup_completed"}
         logger.info("✅ Limpeza concluída")
