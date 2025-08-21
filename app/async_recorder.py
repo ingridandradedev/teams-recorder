@@ -169,7 +169,7 @@ def merge_segments_to_mp4(seg_dir: str, basename: str, out_file: str):
     list_txt = os.path.join(seg_dir, "concat_list.txt")
     with open(list_txt, 'w', encoding='utf-8') as f:
         for fname in files:
-            f.write(f"file '{os.path.join(seg_dir, fname)}'\n")
+            f.write(f"file '{fname}'\n")
 
     cmd = [
         "ffmpeg",
