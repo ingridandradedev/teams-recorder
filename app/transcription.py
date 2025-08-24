@@ -124,6 +124,37 @@ class TranscriptionManager:
             logger.error(f"❌ Erro ao enviar segmento para Gemini: {e}")
             return None
     
+    async def wait_for_file_active(self, file: types.File, max_wait_time: int = 60) -> bool:
+        """
+        Aguarda o arquivo ficar no estado ACTIVE.
+        Retorna True se o arquivo ficou ativo, False se timeout ou erro.
+        """
+        start_time = time.time()
+        
+        while time.time() - start_time < max_wait_time:
+            try:
+                # Verificar o estado atual do arquivo
+                file_info = await self.client.aio.files.get(name=file.name)
+                
+                logger.info(f"📋 Estado do arquivo {file.name}: {file_info.state}")
+                
+                if file_info.state == types.FileState.ACTIVE:
+                    logger.info(f"✅ Arquivo {file.name} está ATIVO e pronto para uso")
+                    return True
+                elif file_info.state == types.FileState.FAILED:
+                    logger.error(f"❌ Arquivo {file.name} falhou no processamento")
+                    return False
+                
+                # Aguardar antes da próxima verificação
+                await asyncio.sleep(2)
+                
+            except Exception as e:
+                logger.error(f"❌ Erro ao verificar estado do arquivo: {e}")
+                await asyncio.sleep(2)
+        
+        logger.error(f"⏰ Timeout aguardando arquivo {file.name} ficar ativo")
+        return False
+    
     async def transcribe_segment(self, video_file: types.File, segment_number: int) -> Optional[Dict]:
         """
         Transcreve um segmento de vídeo usando Gemini 2.5 Pro.
@@ -132,6 +163,12 @@ class TranscriptionManager:
         """
         try:
             logger.info(f"🤖 Iniciando transcrição com Gemini para segmento #{segment_number}")
+            
+            # AGUARDAR O ARQUIVO FICAR ATIVO
+            logger.info(f"⏳ Aguardando arquivo ficar ativo: {video_file.name}")
+            if not await self.wait_for_file_active(video_file):
+                logger.error(f"❌ Arquivo {video_file.name} não ficou ativo a tempo")
+                return None
             
             # Prompt otimizado para transcrição contínua
             prompt = f"""
@@ -246,6 +283,12 @@ class TranscriptionManager:
             yield {
                 "event": "transcription_start",
                 "segment": segment_number
+            }
+            
+            yield {
+                "event": "waiting_file_active",
+                "segment": segment_number,
+                "message": "Aguardando arquivo ficar ativo no Gemini"
             }
             
             # Transcrição
