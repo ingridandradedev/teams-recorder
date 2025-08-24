@@ -73,11 +73,11 @@ class TranscriptionManager:
             logger.error(f"❌ Erro na conversão {ts_path}: {e}")
             raise
         
-    async def upload_video_segment(self, video_path: str) -> Optional[str]:
+    async def upload_video_segment(self, video_path: str) -> Optional[types.File]:
         """
         Faz upload de um segmento de vídeo para o Gemini.
         Converte .ts para .mp4 se necessário para compatibilidade.
-        Retorna o URI do arquivo ou None em caso de erro.
+        Retorna o objeto File do Gemini ou None em caso de erro.
         """
         try:
             # Verificar se precisa converter .ts para .mp4
@@ -118,15 +118,16 @@ class TranscriptionManager:
                 except:
                     pass  # Ignorar erros de limpeza
             
-            return video_file.name
+            return video_file  # Retornar o objeto File completo
             
         except Exception as e:
             logger.error(f"❌ Erro ao enviar segmento para Gemini: {e}")
             return None
     
-    async def transcribe_segment(self, video_file_name: str, segment_number: int) -> Optional[Dict]:
+    async def transcribe_segment(self, video_file: types.File, segment_number: int) -> Optional[Dict]:
         """
         Transcreve um segmento de vídeo usando Gemini 2.5 Pro.
+        Recebe o objeto File do Gemini diretamente.
         Retorna a transcrição estruturada ou None em caso de erro.
         """
         try:
@@ -154,10 +155,7 @@ class TranscriptionManager:
             response = await self.client.aio.models.generate_content(
                 model='gemini-2.5-pro',
                 contents=[
-                    types.Part.from_uri(
-                        file_uri=video_file_name,
-                        mime_type='video/mp4'
-                    ),
+                    video_file,  # Usar o objeto File diretamente
                     prompt
                 ],
                 config=types.GenerateContentConfig(
@@ -172,8 +170,8 @@ class TranscriptionManager:
             
             # Limpar arquivo após processamento
             try:
-                await self.client.aio.files.delete(name=video_file_name)
-                logger.info(f"🗑️ Arquivo temporário removido do Gemini: {video_file_name}")
+                await self.client.aio.files.delete(name=video_file.name)
+                logger.info(f"🗑️ Arquivo temporário removido do Gemini: {video_file.name}")
             except:
                 pass  # Ignorar erros de limpeza
                 
@@ -229,8 +227,8 @@ class TranscriptionManager:
             }
             
             # Upload do segmento
-            video_file_name = await self.upload_video_segment(segment_path)
-            if not video_file_name:
+            video_file = await self.upload_video_segment(segment_path)
+            if not video_file:
                 yield {
                     "event": "segment_upload_error",
                     "segment": segment_number,
@@ -242,7 +240,7 @@ class TranscriptionManager:
                 "event": "segment_upload_complete",
                 "segment": segment_number,
                 "file": os.path.basename(segment_path),
-                "gemini_file": video_file_name
+                "gemini_file": video_file.name  # Usar .name para logging
             }
             
             yield {
@@ -251,7 +249,7 @@ class TranscriptionManager:
             }
             
             # Transcrição
-            transcricao = await self.transcribe_segment(video_file_name, segment_number)
+            transcricao = await self.transcribe_segment(video_file, segment_number)  # Passar o objeto File
             if not transcricao:
                 yield {
                     "event": "transcription_error",
