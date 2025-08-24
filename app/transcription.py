@@ -3,6 +3,7 @@ import json
 import asyncio
 import logging
 import time
+import subprocess
 from typing import List, Dict, Optional, AsyncGenerator
 from pydantic import BaseModel
 from google import genai
@@ -28,19 +29,94 @@ class TranscriptionManager:
         
         self.client = genai.Client(api_key=self.api_key)
         self.processed_segments = {}  # Para evitar processamento duplicado
+    
+    def convert_ts_to_mp4(self, ts_path: str) -> str:
+        """
+        Converte arquivo .ts para .mp4 para compatibilidade com Gemini.
+        Retorna o caminho do arquivo .mp4 convertido.
+        """
+        # Gerar nome do arquivo .mp4
+        mp4_path = ts_path.replace('.ts', '_converted.mp4')
+        
+        try:
+            logger.info(f"🔄 Convertendo {os.path.basename(ts_path)} para MP4...")
+            
+            # Comando FFmpeg para conversão rápida
+            comando = [
+                'ffmpeg',
+                '-y',  # Sobrescrever arquivo se existir
+                '-i', ts_path,  # Arquivo de entrada .ts
+                '-c', 'copy',  # Copiar streams sem re-encoding (mais rápido)
+                '-f', 'mp4',  # Formato de saída
+                mp4_path  # Arquivo de saída
+            ]
+            
+            # Executar conversão
+            result = subprocess.run(
+                comando,
+                capture_output=True,
+                text=True,
+                timeout=30  # Timeout de 30 segundos
+            )
+            
+            if result.returncode == 0:
+                logger.info(f"✅ Conversão concluída: {os.path.basename(mp4_path)} ({os.path.getsize(mp4_path)} bytes)")
+                return mp4_path
+            else:
+                logger.error(f"❌ Erro na conversão FFmpeg: {result.stderr}")
+                raise RuntimeError(f"FFmpeg falhou: {result.stderr}")
+                
+        except subprocess.TimeoutExpired:
+            logger.error(f"⏰ Timeout na conversão do arquivo {ts_path}")
+            raise RuntimeError("Timeout na conversão de vídeo")
+        except Exception as e:
+            logger.error(f"❌ Erro na conversão {ts_path}: {e}")
+            raise
         
     async def upload_video_segment(self, video_path: str) -> Optional[str]:
         """
         Faz upload de um segmento de vídeo para o Gemini.
+        Converte .ts para .mp4 se necessário para compatibilidade.
         Retorna o URI do arquivo ou None em caso de erro.
         """
         try:
-            logger.info(f"📤 Iniciando upload para Gemini: {os.path.basename(video_path)} ({os.path.getsize(video_path)} bytes)")
+            # Verificar se precisa converter .ts para .mp4
+            if video_path.endswith('.ts'):
+                logger.info(f"🔄 Arquivo .ts detectado, convertendo para MP4...")
+                mp4_path = self.convert_ts_to_mp4(video_path)
+                upload_path = mp4_path
+                mime_type = 'video/mp4'
+            else:
+                upload_path = video_path
+                # Determinar mime_type baseado na extensão
+                if video_path.endswith('.mp4'):
+                    mime_type = 'video/mp4'
+                elif video_path.endswith('.webm'):
+                    mime_type = 'video/webm'
+                elif video_path.endswith('.mpeg') or video_path.endswith('.mpg'):
+                    mime_type = 'video/mpeg'
+                else:
+                    mime_type = 'video/mp4'  # Default
             
-            # Upload do arquivo de vídeo
-            video_file = self.client.files.upload(file=video_path)
-            logger.info(f"✅ Segmento enviado para Gemini: {os.path.basename(video_path)} -> {video_file.name}")
+            logger.info(f"📤 Iniciando upload para Gemini: {os.path.basename(upload_path)} ({os.path.getsize(upload_path)} bytes, {mime_type})")
+            
+            # Upload do arquivo de vídeo com mime_type específico
+            video_file = self.client.files.upload(
+                file=upload_path,
+                mime_type=mime_type
+            )
+            logger.info(f"✅ Segmento enviado para Gemini: {os.path.basename(upload_path)} -> {video_file.name}")
+            
+            # Limpar arquivo .mp4 temporário se foi convertido
+            if upload_path != video_path and os.path.exists(upload_path):
+                try:
+                    os.remove(upload_path)
+                    logger.info(f"🗑️ Arquivo temporário MP4 removido: {os.path.basename(upload_path)}")
+                except:
+                    pass  # Ignorar erros de limpeza
+            
             return video_file.name
+            
         except Exception as e:
             logger.error(f"❌ Erro ao enviar segmento para Gemini: {e}")
             return None
