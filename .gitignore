@@ -32,6 +32,10 @@ ENV/
 .env.local
 .env.*.local
 
+# API Keys
+gemini_api_key.txt
+*.key
+
 # Google Cloud credentials
 *.json
 service-account*.json

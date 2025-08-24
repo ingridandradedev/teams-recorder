@@ -10,6 +10,11 @@ from fastapi import FastAPI, Query, Depends, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
 
+# Importar módulos de gravação
+from app.async_recorder import gravar_reuniao_stream_async
+from app.recording_with_transcription import gravar_com_transcricao_async, get_transcription_stream
+from app.transcription import transcription_tracker
+
 # Configurar logging
 logging.basicConfig(
     level=logging.INFO,
@@ -28,9 +33,9 @@ ACTIVE_RECORDINGS: Dict[str, dict] = {}
 async def lifespan(app: FastAPI):
     """Gerenciar ciclo de vida da aplicação."""
     # Startup
-    logger.info("🚀 Iniciando Teams Recorder API v2.1.0")
+    logger.info("🚀 Iniciando Teams Recorder API v2.2.0")
     
-    # Verificar se pelo menos um método de autenticação está configurado
+    # Verificar configuração Google Cloud
     auth_methods = [
         os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
         os.getenv("GOOGLE_CREDENTIALS_JSON"),
@@ -48,6 +53,12 @@ async def lifespan(app: FastAPI):
         )
     else:
         logger.info("✅ Configuração de autenticação Google Cloud detectada")
+    
+    # Verificar configuração Gemini
+    if not os.getenv("GEMINI_API_KEY"):
+        logger.warning("⚠️ GEMINI_API_KEY não configurada! Transcrição não funcionará.")
+    else:
+        logger.info("✅ GEMINI_API_KEY configurada para transcrição")
     
     if EXPECTED_API_TOKEN == "b3e59f8b8c4f48d09e0a0ff172b19a43d79ab69e165d0ec7037cbef967de2a3a":
         logger.warning("⚠️ Usando token de API padrão! Configure API_TOKEN para produção.")
@@ -76,8 +87,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="MarIA Recorder API",
-    description="API para gravação de reuniões do Microsoft Teams com suporte a múltiplas gravações simultâneas",
-    version="2.1.0",
+    description="API para gravação de reuniões do Microsoft Teams com suporte a múltiplas gravações simultâneas e transcrição em tempo real",
+    version="2.2.0",
     lifespan=lifespan
 )
 
@@ -186,49 +197,167 @@ def health():
     """Endpoint de health check."""
     return {
         "status": "healthy",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "active_recordings": len(ACTIVE_RECORDINGS)
     }
 
-# --- Configuração de Autenticação ---
-# ATENÇÃO: Para produção, carregue este token de uma variável de ambiente!
-EXPECTED_API_TOKEN = os.getenv("API_TOKEN", "b3e59f8b8c4f48d09e0a0ff172b19a43d79ab69e165d0ec7037cbef967de2a3a")
+# =======================================
+# NOVOS ENDPOINTS PARA TRANSCRIÇÃO
+# =======================================
 
-# Validar configuração no startup
-@app.on_event("startup")
-async def startup_event():
-    """Verificar configuração no início da aplicação."""
-    logger.info("🚀 Iniciando Teams Recorder API v2.0.0")
+@app.post("/record-and-transcribe")
+async def iniciar_gravacao_com_transcricao(
+    url: str = Query(..., description="URL da reunião do Teams"),
+    segment_time: int = Query(60, description="Segundos por segmento (ex: 60 ou 300)"),
+    upload_dest: str = Query("recordings-segments", description="Pasta destino no bucket para segmentos"),
+    record_video: bool = Query(True, description="Se deve capturar vídeo além do áudio"),
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Inicia uma nova gravação COM transcrição usando Gemini 2.5 Pro.
+    Retorna imediatamente o recording_id para acompanhar o progresso.
+    """
     
-    # Verificar se pelo menos um método de autenticação está configurado
-    auth_methods = [
-        os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
-        os.getenv("GOOGLE_CREDENTIALS_JSON"),
-        os.getenv("GOOGLE_SECRET_NAME")
+    # Verificar se Gemini está configurado
+    if not os.getenv("GEMINI_API_KEY"):
+        raise HTTPException(
+            status_code=400, 
+            detail="GEMINI_API_KEY não configurada. Transcrição não está disponível."
+        )
+    
+    recording_id = str(uuid.uuid4())
+    stop_event = asyncio.Event()
+    
+    # Registrar a gravação
+    STOP_EVENTS[recording_id] = stop_event
+    ACTIVE_RECORDINGS[recording_id] = {
+        "url": url,
+        "started_at": asyncio.get_event_loop().time(),
+        "status": "starting",
+        "type": "recording_with_transcription"
+    }
+    
+    logger.info(f"🎬📝 Nova gravação COM transcrição iniciada: {recording_id[:8]}... | Total ativo: {len(ACTIVE_RECORDINGS)}")
+    
+    # Iniciar gravação com transcrição em background
+    asyncio.create_task(
+        execute_recording_with_transcription(
+            recording_id, url, stop_event, segment_time, upload_dest, record_video
+        )
+    )
+    
+    return {
+        "message": "Gravação com transcrição iniciada com sucesso",
+        "recording_id": recording_id,
+        "status": "started",
+        "transcription_stream_url": f"/transcription-stream/{recording_id}",
+        "stop_url": f"/stop/{recording_id}"
+    }
+
+@app.get("/transcription-stream/{recording_id}", response_class=StreamingResponse)
+async def stream_transcricao(
+    recording_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Stream de eventos de transcrição em tempo real para um recording_id específico.
+    Retorna apenas eventos de transcrição, não de navegação.
+    """
+    
+    # Verificar se o recording_id existe
+    if recording_id not in ACTIVE_RECORDINGS and recording_id not in transcription_tracker.active_transcriptions:
+        raise HTTPException(
+            status_code=404, 
+            detail="Recording ID não encontrado"
+        )
+    
+    logger.info(f"📺 Cliente conectado ao stream de transcrição: {recording_id[:8]}...")
+
+    async def transcription_event_generator() -> AsyncGenerator[str, None]:
+        """Gerador de eventos de transcrição para streaming."""
+        try:
+            async for event in get_transcription_stream(recording_id):
+                payload = {**event, "recording_id": recording_id}
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                
+        except Exception as e:
+            logger.error(f"❌ Erro no stream de transcrição {recording_id[:8]}...: {e}")
+            error_payload = {
+                "event": "transcription_stream_error",
+                "recording_id": recording_id,
+                "error": str(e)
+            }
+            yield f"data: {json.dumps(error_payload)}\n\n"
+
+    return StreamingResponse(
+        transcription_event_generator(), 
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/event-stream; charset=utf-8"
+        }
+    )
+
+@app.get("/transcription-status/{recording_id}")
+async def get_transcription_status(
+    recording_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """Retorna o status atual de uma transcrição específica."""
+    
+    status = transcription_tracker.get_transcription_status(recording_id)
+    if not status:
+        raise HTTPException(
+            status_code=404,
+            detail="Recording ID não encontrado"
+        )
+    
+    results = transcription_tracker.get_transcription_results(recording_id)
+    
+    # Contar falas processadas
+    transcription_segments = [
+        r for r in results 
+        if r.get("event") == "transcription_segment"
     ]
     
-    if not any(auth_methods):
-        logger.warning(
-            "⚠️ Nenhum método de autenticação Google Cloud detectado! "
-            "Configure uma das seguintes variáveis:\n"
-            "- GOOGLE_CREDENTIALS_JSON (recomendado para Railway/Heroku)\n"
-            "- GOOGLE_APPLICATION_CREDENTIALS (para desenvolvimento local)\n"
-            "- GOOGLE_SECRET_NAME (para uso com Secret Manager)\n"
-            "Ou configure ADC se estiver no Google Cloud."
-        )
-    else:
-        logger.info("✅ Configuração de autenticação Google Cloud detectada")
-    
-    if EXPECTED_API_TOKEN == "b3e59f8b8c4f48d09e0a0ff172b19a43d79ab69e165d0ec7037cbef967de2a3a":
-        logger.warning("⚠️ Usando token de API padrão! Configure API_TOKEN para produção.")
+    return {
+        "recording_id": recording_id,
+        "status": status.get("status", "unknown"),
+        "started_at": status.get("started_at"),
+        "finished_at": status.get("finished_at"),
+        "total_segments_processed": status.get("processed_segments", 0),
+        "total_transcription_events": len(results),
+        "total_speech_segments": len(transcription_segments),
+        "metadata": status.get("metadata", {})
+    }
 
-async def verify_api_key(x_api_token: str = Header(None, description="Seu token de API secreto.")):
+async def execute_recording_with_transcription(
+    recording_id: str,
+    url: str,
+    stop_event: asyncio.Event,
+    segment_time: int,
+    upload_dest: str,
+    record_video: bool
+):
     """
-    Dependência para verificar o token da API no cabeçalho X-API-Token.
+    Executa a gravação com transcrição em background.
+    Esta função roda assincronamente e não bloqueia a resposta da API.
     """
-    if not x_api_token:
-        raise HTTPException(status_code=401, detail="Cabeçalho X-API-Token ausente.")
-    if x_api_token != EXPECTED_API_TOKEN:
-        raise HTTPException(status_code=403, detail="Token da API inválido.")
-    return x_api_token
+    try:
+        async for event in gravar_com_transcricao_async(
+            url, recording_id, stop_event, segment_time, upload_dest, record_video
+        ):
+            # Log apenas eventos importantes
+            if event.get("event") in ["transcription_recording_start", "transcription_recording_complete"]:
+                logger.info(f"📝 {event.get('message', 'Evento de transcrição')}")
+                
+    except Exception as e:
+        logger.error(f"❌ Erro na execução de gravação com transcrição {recording_id[:8]}...: {e}")
+        
+    finally:
+        # Limpeza
+        STOP_EVENTS.pop(recording_id, None)
+        ACTIVE_RECORDINGS.pop(recording_id, None)
+        logger.info(f"🧹 Gravação com transcrição {recording_id[:8]}... finalizada | Total ativo: {len(ACTIVE_RECORDINGS)}")
 

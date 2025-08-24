@@ -5,3 +5,5 @@ playwright>=1.40.0
 google-cloud-secret-manager
 google-auth>=2.0.0
 google-cloud-logging
+google-genai>=0.3.0
+pydantic>=2.0.0
