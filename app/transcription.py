@@ -35,9 +35,11 @@ class TranscriptionManager:
         Retorna o URI do arquivo ou None em caso de erro.
         """
         try:
+            logger.info(f"📤 Iniciando upload para Gemini: {os.path.basename(video_path)} ({os.path.getsize(video_path)} bytes)")
+            
             # Upload do arquivo de vídeo
             video_file = self.client.files.upload(file=video_path)
-            logger.info(f"✅ Segmento enviado para Gemini: {os.path.basename(video_path)}")
+            logger.info(f"✅ Segmento enviado para Gemini: {os.path.basename(video_path)} -> {video_file.name}")
             return video_file.name
         except Exception as e:
             logger.error(f"❌ Erro ao enviar segmento para Gemini: {e}")
@@ -49,6 +51,8 @@ class TranscriptionManager:
         Retorna a transcrição estruturada ou None em caso de erro.
         """
         try:
+            logger.info(f"🤖 Iniciando transcrição com Gemini para segmento #{segment_number}")
+            
             # Prompt otimizado para transcrição contínua
             prompt = f"""
             Transcreva este segmento de vídeo (segmento #{segment_number}) identificando:
@@ -65,6 +69,8 @@ class TranscriptionManager:
             
             Retorne no formato JSON estruturado.
             """
+            
+            logger.info(f"📡 Enviando solicitação para Gemini 2.5 Pro...")
             
             response = self.client.models.generate_content(
                 model='gemini-2.5-pro',
@@ -83,11 +89,12 @@ class TranscriptionManager:
             
             # Processar resposta
             transcricao_data = json.loads(response.text)
-            logger.info(f"✅ Transcrição do segmento #{segment_number} concluída")
+            logger.info(f"✅ Transcrição do segmento #{segment_number} concluída: {len(transcricao_data.get('segmentos', []))} falas encontradas")
             
             # Limpar arquivo após processamento
             try:
                 self.client.files.delete(name=video_file_name)
+                logger.info(f"🗑️ Arquivo temporário removido do Gemini: {video_file_name}")
             except:
                 pass  # Ignorar erros de limpeza
                 
@@ -102,9 +109,30 @@ class TranscriptionManager:
         Processa um segmento completo: upload + transcrição + yield dos resultados.
         """
         try:
+            logger.info(f"🎬 Iniciando processamento de segmento: {os.path.basename(segment_path)}")
+            
             # Verificar se arquivo existe
             if not os.path.exists(segment_path):
                 logger.warning(f"⚠️ Segmento não encontrado: {segment_path}")
+                yield {
+                    "event": "segment_file_not_found",
+                    "segment": segment_number,
+                    "file": os.path.basename(segment_path)
+                }
+                return
+            
+            # Verificar tamanho do arquivo
+            file_size = os.path.getsize(segment_path)
+            logger.info(f"📏 Tamanho do segmento: {file_size} bytes")
+            
+            if file_size < 1024:  # Menor que 1KB
+                logger.warning(f"⚠️ Arquivo muito pequeno, ignorando: {os.path.basename(segment_path)}")
+                yield {
+                    "event": "segment_too_small",
+                    "segment": segment_number,
+                    "file": os.path.basename(segment_path),
+                    "size": file_size
+                }
                 return
             
             # Evitar processamento duplicado
@@ -117,7 +145,8 @@ class TranscriptionManager:
             yield {
                 "event": "segment_upload_start",
                 "segment": segment_number,
-                "file": os.path.basename(segment_path)
+                "file": os.path.basename(segment_path),
+                "size": file_size
             }
             
             # Upload do segmento
@@ -126,14 +155,15 @@ class TranscriptionManager:
                 yield {
                     "event": "segment_upload_error",
                     "segment": segment_number,
-                    "error": "Falha no upload"
+                    "error": "Falha no upload para Gemini"
                 }
                 return
             
             yield {
                 "event": "segment_upload_complete",
                 "segment": segment_number,
-                "file": os.path.basename(segment_path)
+                "file": os.path.basename(segment_path),
+                "gemini_file": video_file_name
             }
             
             yield {
@@ -152,10 +182,14 @@ class TranscriptionManager:
                 return
             
             # Yield dos resultados de transcrição
-            for segmento in transcricao.get('segmentos', []):
+            segmentos_encontrados = transcricao.get('segmentos', [])
+            logger.info(f"📝 Processando {len(segmentos_encontrados)} falas do segmento #{segment_number}")
+            
+            for idx, segmento in enumerate(segmentos_encontrados):
                 yield {
                     "event": "transcription_segment",
                     "segment_number": segment_number,
+                    "segment_index": idx,
                     "falante": segmento.get('falante', 'Desconhecido'),
                     "timestamp_inicial": segmento.get('timestamp_inicial', '00:00:00'),
                     "timestamp_final": segmento.get('timestamp_final', '00:00:00'),
@@ -165,7 +199,7 @@ class TranscriptionManager:
             yield {
                 "event": "transcription_complete",
                 "segment": segment_number,
-                "total_falas": len(transcricao.get('segmentos', []))
+                "total_falas": len(segmentos_encontrados)
             }
             
         except Exception as e:
