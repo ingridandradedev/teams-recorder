@@ -56,9 +56,10 @@ def iniciar_gravacao_ffmpeg(nome_arquivo):
     return subprocess.Popen(comando)
 
 
-def iniciar_gravacao_segmentada(basename: str, segment_time: int = 60, video_size=(1280, 720)):
+def iniciar_gravacao_segmentada(basename: str, segment_time: int = 60, video_size=(1920, 1080)):
     """
     Inicia FFmpeg para capturar vídeo (X11) + áudio (PulseAudio) em segmentos .ts.
+    Agora com resolução maior para capturar toda a área da reunião.
 
     Returns: (proc, seg_dir, basename)
     """
@@ -74,17 +75,17 @@ def iniciar_gravacao_segmentada(basename: str, segment_time: int = 60, video_siz
     comando = [
         "ffmpeg",
         "-y",
-        # video input (X11)
+        # video input (X11) - captura toda a tela virtual
         "-f", "x11grab",
         "-video_size", f"{width}x{height}",
         "-i", display,
         # audio input (Pulse)
         "-f", "pulse",
         "-i", audio_dev,
-        # encoding
+        # encoding com qualidade otimizada
         "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "23",
+        "-preset", "medium",  # Melhor qualidade que veryfast
+        "-crf", "20",         # Melhor qualidade que 23
         "-c:a", "aac",
         "-b:a", "128k",
         # segmentation
@@ -320,8 +321,10 @@ async def gravar_reuniao_stream_async(
     ffmpeg_exit_code = None
 
     try:
-        # Usar Playwright Async API
+        # Usar Playwright Async API com configurações otimizadas para captura completa
         playwright_instance = await async_playwright().start()
+        
+        # Configurações de browser otimizadas para tela cheia
         browser = await playwright_instance.chromium.launch(
             headless=False,
             args=[
@@ -329,17 +332,28 @@ async def gravar_reuniao_stream_async(
                 "--disable-infobars",
                 "--disable-blink-features=AutomationControlled",
                 "--disable-features=IsolateOrigins,site-per-process",
-                "--window-size=1280,720",
-                "--start-maximized",
+                "--start-fullscreen",           # Iniciar em tela cheia
+                "--kiosk",                     # Modo kiosk (tela cheia sem barras)
+                "--window-size=1920,1080",     # Tamanho maior da janela
                 "--no-sandbox",
-                "--disable-dev-shm-usage"
+                "--disable-dev-shm-usage",
+                "--disable-extensions",
+                "--disable-plugins",
+                "--disable-background-timer-throttling",
+                "--disable-renderer-backgrounding",
+                "--disable-backgrounding-occluded-windows"
             ]
         )
         
+        # Contexto com viewport maior e configurações otimizadas
         context = await browser.new_context(
-            viewport={"width": 1280, "height": 720},
+            viewport={"width": 1920, "height": 1080},  # Viewport maior
             locale="pt-BR",
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.5735.90 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.5735.90 Safari/537.36",
+            # Configurações para melhor renderização
+            device_scale_factor=1,
+            has_touch=False,
+            is_mobile=False
         )
         
         await context.grant_permissions(["microphone", "camera"])
@@ -351,6 +365,40 @@ async def gravar_reuniao_stream_async(
         yield {"event": "navigating", "url": LINK}
         await page.goto(LINK, timeout=90000, wait_until="domcontentloaded")
         await tirar_screenshot_e_upload_async(page, "navigated")
+
+        # Configurar zoom para mostrar mais conteúdo e maximizar janela
+        yield {"event": "setting_zoom_and_fullscreen"}
+        await page.evaluate("""
+            // Aplicar zoom out para mostrar mais conteúdo
+            document.body.style.zoom = '0.85';
+            
+            // Tentar entrar em modo tela cheia
+            if (document.documentElement.requestFullscreen) {
+                document.documentElement.requestFullscreen().catch(e => console.log('Fullscreen failed:', e));
+            } else if (document.documentElement.mozRequestFullScreen) {
+                document.documentElement.mozRequestFullScreen();
+            } else if (document.documentElement.webkitRequestFullscreen) {
+                document.documentElement.webkitRequestFullscreen();
+            } else if (document.documentElement.msRequestFullscreen) {
+                document.documentElement.msRequestFullscreen();
+            }
+            
+            // Garantir que a janela está maximizada
+            window.moveTo(0, 0);
+            window.resizeTo(screen.width, screen.height);
+            
+            // Simular F11 para tela cheia
+            const event = new KeyboardEvent('keydown', {
+                key: 'F11',
+                code: 'F11',
+                keyCode: 122,
+                which: 122,
+                bubbles: true
+            });
+            document.dispatchEvent(event);
+        """)
+        await page.wait_for_timeout(2000)  # Aguardar estabilizar
+        logger.info("🔍 Zoom configurado para 85% e modo tela cheia ativado")
 
         yield {"event": "filling_name", "name": NOME_USUARIO}
         await page.wait_for_selector('[data-tid="prejoin-display-name-input"]', timeout=60000)
@@ -486,17 +534,47 @@ async def gravar_reuniao_stream_async(
         else:
             logger.info("✅ Não está no lobby, provavelmente na reunião")
 
-        # Iniciar gravação segmentada (vídeo + áudio)
+        # Iniciar gravação segmentada (vídeo + áudio) com resolução 1920x1080
         yield {"event": "starting_recording"}
         seg_basename = datetime.now().strftime('gravacao_%Y%m%d_%H%M%S')
-        # segment_time parameter overrides env
-        proc, seg_dir, seg_basename = iniciar_gravacao_segmentada(seg_basename, segment_time)
+        # segment_time parameter overrides env, usando resolução maior para capturar toda a tela
+        proc, seg_dir, seg_basename = iniciar_gravacao_segmentada(seg_basename, segment_time, video_size=(1920, 1080))
         logger.info(f"🎥 Gravação segmentada iniciada (PID: {proc.pid}) dir={seg_dir}")
 
         # Start background uploader for segments
         uploaded = set()
         upload_stop_event = asyncio.Event()
         upload_task = asyncio.create_task(_upload_segments_worker(seg_dir, uploaded, upload_stop_event, upload_dest))
+
+        # Aguardar um pouco e reaplicar zoom para garantir que está funcionando na reunião
+        await page.wait_for_timeout(3000)
+        await page.evaluate("""
+            // Reaplicar configurações de zoom e layout após entrar na reunião
+            document.body.style.zoom = '0.85';
+            
+            // Tentar encontrar e ajustar o container da reunião
+            const meetingContainer = document.querySelector('[data-tid="meeting-stage"]') || 
+                                   document.querySelector('.meeting-stage') ||
+                                   document.querySelector('#meeting-stage') ||
+                                   document.querySelector('.app-shared-meeting-stage');
+                                   
+            if (meetingContainer) {
+                meetingContainer.style.transform = 'scale(0.85)';
+                meetingContainer.style.transformOrigin = 'top left';
+                meetingContainer.style.height = '117%'; // Compensar o scale
+                meetingContainer.style.width = '117%';
+            }
+            
+            // Garantir que participantes sejam visíveis
+            const participantsContainer = document.querySelector('[data-tid="participants-gallery"]') ||
+                                        document.querySelector('.participants-gallery') ||
+                                        document.querySelector('.gallery-view');
+                                        
+            if (participantsContainer) {
+                participantsContainer.style.zoom = '0.8';
+            }
+        """)
+        logger.info("🔍 Zoom e layout otimizados para capturar todos os participantes")
 
         # Loop principal de gravação com verificações assíncronas
         inicio_gravacao = time.time()

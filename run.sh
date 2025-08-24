@@ -26,5 +26,5 @@ fi
 
 # Roda o uvicorn via Xvfb para permitir o Playwright/Chromium headless
 echo "🚀 Iniciando o servidor FastAPI com Xvfb..."
-xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" \
+xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
   uvicorn app.main:app --host 0.0.0.0 --port 8000
