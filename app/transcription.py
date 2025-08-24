@@ -100,10 +100,13 @@ class TranscriptionManager:
             
             logger.info(f"📤 Iniciando upload para Gemini: {os.path.basename(upload_path)} ({os.path.getsize(upload_path)} bytes, {mime_type})")
             
-            # Upload do arquivo de vídeo com mime_type específico
-            video_file = self.client.files.upload(
+            # Upload do arquivo de vídeo usando a API assíncrona correta
+            video_file = await self.client.aio.files.upload(
                 file=upload_path,
-                mime_type=mime_type
+                config=types.UploadFileConfig(
+                    display_name=f"video_segment_{os.path.basename(upload_path)}",
+                    mime_type=mime_type
+                )
             )
             logger.info(f"✅ Segmento enviado para Gemini: {os.path.basename(upload_path)} -> {video_file.name}")
             
@@ -148,7 +151,7 @@ class TranscriptionManager:
             
             logger.info(f"📡 Enviando solicitação para Gemini 2.5 Pro...")
             
-            response = self.client.models.generate_content(
+            response = await self.client.aio.models.generate_content(
                 model='gemini-2.5-pro',
                 contents=[
                     types.Part.from_uri(
@@ -169,7 +172,7 @@ class TranscriptionManager:
             
             # Limpar arquivo após processamento
             try:
-                self.client.files.delete(name=video_file_name)
+                await self.client.aio.files.delete(name=video_file_name)
                 logger.info(f"🗑️ Arquivo temporário removido do Gemini: {video_file_name}")
             except:
                 pass  # Ignorar erros de limpeza
