@@ -25,7 +25,7 @@ async def gravar_com_transcricao_async(
     
     # Inicializar gerenciador de transcrição
     try:
-        transcription_manager = TranscriptionManager()
+        transcription_manager = TranscriptionManager(recording_id=recording_id)
     except ValueError as e:
         yield {
             "event": "transcription_error",

@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste - Stream de Dados de Transcrição</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            align-items: center;
+        }
+        .controls input {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            flex: 1;
+        }
+        .controls button {
+            padding: 10px 20px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .controls button:hover {
+            background: #0056b3;
+        }
+        .controls button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            font-weight: bold;
+        }
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .transcription-container {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            height: 400px;
+            overflow-y: auto;
+            padding: 15px;
+            background: #fafafa;
+        }
+        .transcription-item {
+            background: white;
+            margin-bottom: 15px;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #007bff;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .transcription-item.system {
+            border-left-color: #28a745;
+            background: #f8f9fa;
+        }
+        .transcription-item.error {
+            border-left-color: #dc3545;
+            background: #fff5f5;
+        }
+        .speaker {
+            font-weight: bold;
+            color: #007bff;
+            margin-bottom: 5px;
+        }
+        .timestamp {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .text {
+            line-height: 1.4;
+            color: #333;
+        }
+        .metadata {
+            font-size: 0.8em;
+            color: #888;
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #eee;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎤 Stream de Dados de Transcrição</h1>
+            <p>Endpoint limpo que retorna apenas os resultados do Gemini</p>
+        </div>
+
+        <div class="controls">
+            <input 
+                type="text" 
+                id="recordingId" 
+                placeholder="ID da gravação (ex: abc123def456...)"
+                value=""
+            >
+            <button id="connectBtn" onclick="connectStream()">
+                Conectar Stream
+            </button>
+            <button id="disconnectBtn" onclick="disconnectStream()" disabled>
+                Desconectar
+            </button>
+            <button onclick="clearTranscriptions()">
+                Limpar
+            </button>
+        </div>
+
+        <div id="status" class="status disconnected">
+            Status: Desconectado
+        </div>
+
+        <div id="transcriptions" class="transcription-container">
+            <p style="text-align: center; color: #666; margin-top: 100px;">
+                Aguardando conexão com o stream...
+            </p>
+        </div>
+    </div>
+
+    <script>
+        let eventSource = null;
+        let transcriptionCount = 0;
+
+        function updateStatus(message, connected) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${connected ? 'connected' : 'disconnected'}`;
+        }
+
+        function connectStream() {
+            const recordingId = document.getElementById('recordingId').value.trim();
+            
+            if (!recordingId) {
+                alert('Por favor, insira o ID da gravação');
+                return;
+            }
+
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            const url = `http://localhost:8000/transcription-data/${recordingId}`;
+            eventSource = new EventSource(url);
+
+            updateStatus('Conectando...', false);
+            document.getElementById('connectBtn').disabled = true;
+            document.getElementById('disconnectBtn').disabled = false;
+
+            eventSource.onopen = function(event) {
+                updateStatus('Conectado - Aguardando dados...', true);
+                addSystemMessage('Conectado ao stream de transcrição');
+            };
+
+            eventSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleTranscriptionData(data);
+                } catch (e) {
+                    console.error('Erro ao processar dados:', e);
+                    addErrorMessage('Erro ao processar dados recebidos');
+                }
+            };
+
+            eventSource.onerror = function(event) {
+                updateStatus('Erro na conexão', false);
+                addErrorMessage('Erro na conexão com o servidor');
+                document.getElementById('connectBtn').disabled = false;
+                document.getElementById('disconnectBtn').disabled = true;
+            };
+        }
+
+        function disconnectStream() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
+            updateStatus('Desconectado', false);
+            document.getElementById('connectBtn').disabled = false;
+            document.getElementById('disconnectBtn').disabled = true;
+            addSystemMessage('Desconectado do stream');
+        }
+
+        function handleTranscriptionData(data) {
+            console.log('Dados recebidos:', data);
+
+            switch (data.event) {
+                case 'stream_start':
+                    addSystemMessage(`Iniciando stream para gravação: ${data.recording_id}`);
+                    break;
+
+                case 'gemini_transcription':
+                    transcriptionCount++;
+                    addTranscriptionSegment(data);
+                    updateStatus(`Conectado - ${transcriptionCount} transcrições recebidas`, true);
+                    break;
+
+                case 'transcription_finished':
+                    addSystemMessage(`Transcrição finalizada. Total de segmentos: ${data.total_segments}`);
+                    updateStatus('Transcrição concluída', false);
+                    document.getElementById('connectBtn').disabled = false;
+                    document.getElementById('disconnectBtn').disabled = true;
+                    break;
+
+                case 'error':
+                case 'stream_error':
+                    addErrorMessage(data.message || data.error || 'Erro desconhecido');
+                    break;
+
+                default:
+                    addSystemMessage(`Evento: ${data.event}`);
+            }
+        }
+
+        function addTranscriptionSegment(data) {
+            const container = document.getElementById('transcriptions');
+            
+            const item = document.createElement('div');
+            item.className = 'transcription-item';
+            
+            const speaker = data.falante || 'Desconhecido';
+            const startTime = data.timestamp_inicial || '--:--:--';
+            const endTime = data.timestamp_final || '--:--:--';
+            const text = data.texto || '(sem texto)';
+            
+            item.innerHTML = `
+                <div class="speaker">🗣️ ${speaker}</div>
+                <div class="timestamp">⏰ ${startTime} - ${endTime}</div>
+                <div class="text">${text}</div>
+                <div class="metadata">
+                    Segmento: ${data.segment_number || 'N/A'} | 
+                    Índice: ${data.segment_index || 'N/A'} |
+                    Recebido: ${new Date().toLocaleTimeString()}
+                </div>
+            `;
+            
+            container.appendChild(item);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function addSystemMessage(message) {
+            const container = document.getElementById('transcriptions');
+            
+            const item = document.createElement('div');
+            item.className = 'transcription-item system';
+            item.innerHTML = `
+                <div class="text">ℹ️ ${message}</div>
+                <div class="metadata">${new Date().toLocaleTimeString()}</div>
+            `;
+            
+            container.appendChild(item);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function addErrorMessage(message) {
+            const container = document.getElementById('transcriptions');
+            
+            const item = document.createElement('div');
+            item.className = 'transcription-item error';
+            item.innerHTML = `
+                <div class="text">❌ ${message}</div>
+                <div class="metadata">${new Date().toLocaleTimeString()}</div>
+            `;
+            
+            container.appendChild(item);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function clearTranscriptions() {
+            const container = document.getElementById('transcriptions');
+            container.innerHTML = `
+                <p style="text-align: center; color: #666; margin-top: 100px;">
+                    Aguardando conexão com o stream...
+                </p>
+            `;
+            transcriptionCount = 0;
+            updateStatus(eventSource ? 'Conectado - Aguardando dados...' : 'Desconectado', !!eventSource);
+        }
+
+        // Cleanup ao fechar a página
+        window.addEventListener('beforeunload', function() {
+            if (eventSource) {
+                eventSource.close();
+            }
+        });
+    </script>
+</body>
+</html>

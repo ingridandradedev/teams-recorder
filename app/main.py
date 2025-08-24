@@ -361,3 +361,45 @@ async def execute_recording_with_transcription(
         ACTIVE_RECORDINGS.pop(recording_id, None)
         logger.info(f"🧹 Gravação com transcrição {recording_id[:8]}... finalizada | Total ativo: {len(ACTIVE_RECORDINGS)}")
 
+
+@app.get("/transcription-data/{recording_id}")
+async def stream_transcription_data(recording_id: str):
+    """
+    Endpoint de stream limpo para dados de transcrição.
+    Retorna apenas os objetos JSON gerados pelo Gemini, sem eventos intermediários.
+    """
+    from app.transcription import transcription_tracker
+    
+    async def generate_clean_stream():
+        try:
+            yield "data: " + json.dumps({
+                "event": "stream_start",
+                "recording_id": recording_id,
+                "message": "Iniciando stream de dados de transcrição"
+            }) + "\n\n"
+            
+            async for data in transcription_tracker.stream_clean_transcription_data(recording_id):
+                yield f"data: {json.dumps(data)}\n\n"
+                
+        except Exception as e:
+            error_payload = {
+                "event": "stream_error",
+                "recording_id": recording_id,
+                "error": str(e)
+            }
+            yield f"data: {json.dumps(error_payload)}\n\n"
+    
+    return StreamingResponse(
+        generate_clean_stream(),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/event-stream"
+        }
+    )
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

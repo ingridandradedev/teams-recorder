@@ -22,13 +22,14 @@ class TranscricaoCompleta(BaseModel):
     segmentos: List[TranscricaoSegmento]
 
 class TranscriptionManager:
-    def __init__(self):
+    def __init__(self, recording_id: str = None):
         self.api_key = os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY não encontrada nas variáveis de ambiente")
         
         self.client = genai.Client(api_key=self.api_key)
         self.processed_segments = {}  # Para evitar processamento duplicado
+        self.recording_id = recording_id  # Para rastreamento no tracker
     
     def convert_ts_to_mp4(self, ts_path: str) -> str:
         """
@@ -172,19 +173,31 @@ class TranscriptionManager:
             
             # Prompt otimizado para transcrição contínua
             prompt = f"""
-            Transcreva este segmento de vídeo (segmento #{segment_number}) identificando:
+            Transcreva este segmento de vídeo (segmento #{segment_number}) identificando falas humanas.
             
+            INSTRUÇÕES:
             1. FALANTES: Use o nome real se visível na tela ou mencionado. Se não identificável, use "Participante 1", "Participante 2", etc.
             2. TIMESTAMPS: Formato HH:MM:SS (baseado no tempo do segmento)
             3. TEXTO: Transcrição exata do que foi falado
+            4. Mantenha consistência nos nomes dos falantes entre segmentos
+            5. Ignore ruídos de fundo e sons técnicos
             
-            IMPORTANTE:
-            - Mantenha consistência nos nomes dos falantes entre segmentos
-            - Se for continuação de uma fala anterior, indique isso
-            - Ignore ruídos de fundo e sons técnicos
-            - Retorne apenas falas humanas relevantes
+            FORMATO JSON OBRIGATÓRIO (sempre retorne este formato, mesmo se não houver falas):
+            {{
+                "segmentos": [
+                    {{
+                        "falante": "Nome do falante",
+                        "timestamp_inicial": "00:00:00",
+                        "timestamp_final": "00:00:05",
+                        "texto": "Texto transcrito exato"
+                    }}
+                ]
+            }}
             
-            Retorne no formato JSON estruturado.
+            Se NÃO houver falas humanas identificáveis, retorne:
+            {{
+                "segmentos": []
+            }}
             """
             
             logger.info(f"📡 Enviando solicitação para Gemini 2.5 Pro...")
@@ -306,7 +319,7 @@ class TranscriptionManager:
             logger.info(f"📝 Processando {len(segmentos_encontrados)} falas do segmento #{segment_number}")
             
             for idx, segmento in enumerate(segmentos_encontrados):
-                yield {
+                result = {
                     "event": "transcription_segment",
                     "segment_number": segment_number,
                     "segment_index": idx,
@@ -315,6 +328,12 @@ class TranscriptionManager:
                     "timestamp_final": segmento.get('timestamp_final', '00:00:00'),
                     "texto": segmento.get('texto', '')
                 }
+                
+                # Armazena no tracker para stream limpo
+                if hasattr(self, 'recording_id') and self.recording_id:
+                    transcription_tracker.add_transcription_result(self.recording_id, result)
+                
+                yield result
             
             yield {
                 "event": "transcription_complete",
@@ -374,6 +393,56 @@ class TranscriptionTracker:
     def get_transcription_results(self, recording_id: str) -> List[Dict]:
         """Retorna resultados de transcrição."""
         return self.transcription_results.get(recording_id, [])
+    
+    async def stream_clean_transcription_data(self, recording_id: str):
+        """
+        Stream limpo de dados de transcrição - apenas os resultados do Gemini.
+        Retorna somente os objetos JSON gerados pelo Gemini, sem eventos intermediários.
+        """
+        if recording_id not in self.active_transcriptions:
+            yield {
+                "event": "error",
+                "message": f"Transcrição {recording_id} não encontrada"
+            }
+            return
+        
+        # Contador de resultados já enviados
+        sent_count = 0
+        
+        while True:
+            current_results = self.transcription_results.get(recording_id, [])
+            transcription_status = self.active_transcriptions.get(recording_id, {})
+            
+            # Envia novos resultados se houver
+            if len(current_results) > sent_count:
+                for result in current_results[sent_count:]:
+                    # Apenas envia resultados de transcrição (segmentos do Gemini)
+                    if result.get("event") == "transcription_segment":
+                        yield {
+                            "event": "gemini_transcription",
+                            "segment_number": result.get("segment_number"),
+                            "segment_index": result.get("segment_index"),
+                            "falante": result.get("falante"),
+                            "timestamp_inicial": result.get("timestamp_inicial"),
+                            "timestamp_final": result.get("timestamp_final"),
+                            "texto": result.get("texto"),
+                            "timestamp": time.time()
+                        }
+                
+                sent_count = len(current_results)
+            
+            # Verifica se a transcrição foi finalizada
+            if transcription_status.get("status") == "completed":
+                yield {
+                    "event": "transcription_finished",
+                    "recording_id": recording_id,
+                    "total_segments": sent_count,
+                    "timestamp": time.time()
+                }
+                break
+            
+            # Aguarda um pouco antes de verificar novamente
+            await asyncio.sleep(0.5)
 
 # Instância global para gerenciar transcrições
 transcription_tracker = TranscriptionTracker()
