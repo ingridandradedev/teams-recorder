@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste - Feedback PNL com Gravação Teams</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            border-bottom: 2px solid #e1e5e9;
+            padding-bottom: 20px;
+        }
+        .header h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+            font-size: 2.2em;
+        }
+        .header p {
+            color: #7f8c8d;
+            font-size: 1.1em;
+        }
+        .controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .control-group {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #dee2e6;
+        }
+        .control-group h3 {
+            margin-top: 0;
+            color: #495057;
+            font-size: 1.2em;
+        }
+        .controls input, .controls select {
+            width: 100%;
+            padding: 12px;
+            margin: 8px 0;
+            border: 2px solid #e9ecef;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s ease;
+        }
+        .controls input:focus, .controls select:focus {
+            outline: none;
+            border-color: #007bff;
+            box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
+        }
+        .controls button {
+            width: 100%;
+            padding: 15px;
+            margin: 10px 0;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .btn-start {
+            background: linear-gradient(135deg, #28a745, #20c997);
+            color: white;
+        }
+        .btn-start:hover:not(:disabled) {
+            background: linear-gradient(135deg, #218838, #1ea085);
+            transform: translateY(-2px);
+        }
+        .btn-stop {
+            background: linear-gradient(135deg, #dc3545, #e74c3c);
+            color: white;
+        }
+        .btn-stop:hover:not(:disabled) {
+            background: linear-gradient(135deg, #c82333, #c0392b);
+            transform: translateY(-2px);
+        }
+        .btn-pause {
+            background: linear-gradient(135deg, #ffc107, #f39c12);
+            color: #212529;
+        }
+        .btn-pause:hover:not(:disabled) {
+            background: linear-gradient(135deg, #e0a800, #d68910);
+            transform: translateY(-2px);
+        }
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+        .status {
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 8px;
+            font-weight: 500;
+            text-align: center;
+            font-size: 16px;
+        }
+        .status.active {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.paused {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        .results {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 30px;
+        }
+        .result-section {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #dee2e6;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .result-section h3 {
+            margin-top: 0;
+            color: #495057;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+        }
+        .feedback-item {
+            background: white;
+            padding: 12px;
+            margin: 10px 0;
+            border-radius: 6px;
+            border-left: 4px solid #007bff;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .feedback-item.sugestao_fala {
+            border-left-color: #28a745;
+            background: #f8fff9;
+        }
+        .feedback-item.padrao {
+            border-left-color: #ffc107;
+            background: #fffdf6;
+        }
+        .feedback-item.evolucao {
+            border-left-color: #17a2b8;
+            background: #f6feff;
+        }
+        .feedback-type {
+            font-weight: bold;
+            color: #495057;
+            font-size: 12px;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+        .feedback-message {
+            color: #333;
+            line-height: 1.4;
+        }
+        .context-info {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border: 1px solid #bbdefb;
+        }
+        .context-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            text-align: center;
+        }
+        .context-stat {
+            background: white;
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid #ddd;
+        }
+        .stat-number {
+            font-size: 24px;
+            font-weight: bold;
+            color: #007bff;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #6c757d;
+            text-transform: uppercase;
+        }
+        .recording-events {
+            background: #fff;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            max-height: 300px;
+            overflow-y: auto;
+            padding: 15px;
+            margin: 20px 0;
+        }
+        .recording-event {
+            padding: 8px 12px;
+            margin: 5px 0;
+            border-radius: 4px;
+            font-size: 14px;
+            border-left: 3px solid #007bff;
+        }
+        .recording-event.error {
+            background: #f8d7da;
+            border-left-color: #dc3545;
+            color: #721c24;
+        }
+        .recording-event.success {
+            background: #d4edda;
+            border-left-color: #28a745;
+            color: #155724;
+        }
+        .event-timestamp {
+            color: #6c757d;
+            font-size: 12px;
+            float: right;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎬💬 Teste: Feedback PNL + Teams</h1>
+            <p>Sistema integrado de gravação do Teams com análise de feedback PNL em tempo real</p>
+        </div>
+
+        <div class="controls">
+            <div class="control-group">
+                <h3>📝 Configuração da Sessão</h3>
+                <input type="url" id="teamsUrl" placeholder="URL da reunião do Teams" 
+                       value="https://teams.microsoft.com/l/meetup-join/example">
+                <input type="text" id="apiToken" placeholder="Seu API Token" 
+                       value="b3e59f8b8c4f48d09e0a0ff172b19a43d79ab69e165d0ec7037cbef967de2a3a">
+                <select id="segmentTime">
+                    <option value="30">Segmentos de 30 segundos</option>
+                    <option value="60" selected>Segmentos de 60 segundos</option>
+                    <option value="120">Segmentos de 2 minutos</option>
+                </select>
+                <label>
+                    <input type="checkbox" id="recordVideo" checked> Gravar vídeo
+                </label>
+            </div>
+
+            <div class="control-group">
+                <h3>🎮 Controles da Sessão</h3>
+                <button id="startBtn" class="btn-start" onclick="startFeedbackSession()">
+                    🚀 Iniciar Sessão de Feedback + Teams
+                </button>
+                <button id="pauseBtn" class="btn-pause" onclick="pauseSession()" disabled>
+                    ⏸️ Pausar Análise
+                </button>
+                <button id="resumeBtn" class="btn-pause" onclick="resumeSession()" disabled style="display: none;">
+                    ▶️ Retomar Análise
+                </button>
+                <button id="stopBtn" class="btn-stop" onclick="stopSession()" disabled>
+                    ⏹️ Encerrar Sessão
+                </button>
+            </div>
+        </div>
+
+        <div id="statusDiv" class="status" style="display: none;"></div>
+
+        <div class="context-info" id="contextInfo" style="display: none;">
+            <h4>📊 Contexto da Conversa</h4>
+            <div class="context-stats" id="contextStats"></div>
+        </div>
+
+        <div class="results">
+            <div class="result-section">
+                <h3>💬 Análises de Feedback PNL</h3>
+                <div id="feedbackResults"></div>
+            </div>
+            
+            <div class="result-section">
+                <h3>🎬 Eventos de Gravação</h3>
+                <div id="recordingEvents" class="recording-events"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentSessionId = null;
+        let eventSource = null;
+        let sessionStatus = 'stopped';
+
+        function updateStatus(message, type = 'active') {
+            const statusDiv = document.getElementById('statusDiv');
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${type}`;
+            statusDiv.style.display = 'block';
+        }
+
+        function updateButtons() {
+            const startBtn = document.getElementById('startBtn');
+            const pauseBtn = document.getElementById('pauseBtn');
+            const resumeBtn = document.getElementById('resumeBtn');
+            const stopBtn = document.getElementById('stopBtn');
+
+            startBtn.disabled = sessionStatus !== 'stopped';
+            stopBtn.disabled = sessionStatus === 'stopped';
+            
+            if (sessionStatus === 'active') {
+                pauseBtn.disabled = false;
+                pauseBtn.style.display = 'inline-block';
+                resumeBtn.style.display = 'none';
+            } else if (sessionStatus === 'paused') {
+                pauseBtn.style.display = 'none';
+                resumeBtn.disabled = false;
+                resumeBtn.style.display = 'inline-block';
+            } else {
+                pauseBtn.disabled = true;
+                resumeBtn.disabled = true;
+            }
+        }
+
+        function addRecordingEvent(message, type = 'info') {
+            const container = document.getElementById('recordingEvents');
+            const eventDiv = document.createElement('div');
+            eventDiv.className = `recording-event ${type}`;
+            
+            const timestamp = new Date().toLocaleTimeString();
+            eventDiv.innerHTML = `
+                ${message}
+                <span class="event-timestamp">${timestamp}</span>
+            `;
+            
+            container.insertBefore(eventDiv, container.firstChild);
+            
+            // Manter apenas os últimos 20 eventos
+            while (container.children.length > 20) {
+                container.removeChild(container.lastChild);
+            }
+        }
+
+        function addFeedbackAnalysis(data) {
+            const container = document.getElementById('feedbackResults');
+            
+            if (data.feedback_rt) {
+                data.feedback_rt.forEach(feedback => {
+                    const feedbackDiv = document.createElement('div');
+                    feedbackDiv.className = `feedback-item ${feedback.tipo}`;
+                    feedbackDiv.innerHTML = `
+                        <div class="feedback-type">${feedback.tipo}</div>
+                        <div class="feedback-message">${feedback.mensagem}</div>
+                    `;
+                    container.insertBefore(feedbackDiv, container.firstChild);
+                });
+            }
+            
+            // Manter apenas os últimos 15 feedbacks
+            while (container.children.length > 15) {
+                container.removeChild(container.lastChild);
+            }
+        }
+
+        function updateContextInfo(contextInfo) {
+            const contextDiv = document.getElementById('contextInfo');
+            const statsDiv = document.getElementById('contextStats');
+            
+            if (contextInfo) {
+                statsDiv.innerHTML = `
+                    <div class="context-stat">
+                        <div class="stat-number">${contextInfo.total_segments || 0}</div>
+                        <div class="stat-label">Segmentos</div>
+                    </div>
+                    <div class="context-stat">
+                        <div class="stat-number">${contextInfo.padroes_identificados || 0}</div>
+                        <div class="stat-label">Padrões</div>
+                    </div>
+                    <div class="context-stat">
+                        <div class="stat-number">${contextInfo.evolucao_disponivel ? 'Sim' : 'Não'}</div>
+                        <div class="stat-label">Evolução</div>
+                    </div>
+                `;
+                contextDiv.style.display = 'block';
+            }
+        }
+
+        async function startFeedbackSession() {
+            const teamsUrl = document.getElementById('teamsUrl').value;
+            const apiToken = document.getElementById('apiToken').value;
+            const segmentTime = document.getElementById('segmentTime').value;
+            const recordVideo = document.getElementById('recordVideo').checked;
+
+            if (!teamsUrl || !apiToken) {
+                updateStatus('❌ Preencha URL do Teams e API Token', 'error');
+                return;
+            }
+
+            try {
+                updateStatus('🔄 Iniciando sessão de feedback PNL + Teams...', 'active');
+                
+                const response = await fetch(`/api/feedback/start?url=${encodeURIComponent(teamsUrl)}&segment_time=${segmentTime}&record_video=${recordVideo}`, {
+                    method: 'POST',
+                    headers: {
+                        'X-API-Token': apiToken
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Erro HTTP: ${response.status}`);
+                }
+
+                const data = await response.json();
+                currentSessionId = data.sessionId;
+                sessionStatus = 'active';
+                
+                updateStatus(`✅ Sessão iniciada: ${currentSessionId.substring(0, 8)}...`, 'active');
+                updateButtons();
+                
+                // Conectar ao stream de eventos
+                connectToFeedbackStream();
+                
+                addRecordingEvent(`🚀 Sessão de feedback PNL iniciada: ${currentSessionId.substring(0, 8)}...`, 'success');
+
+            } catch (error) {
+                console.error('Erro ao iniciar sessão:', error);
+                updateStatus(`❌ Erro: ${error.message}`, 'error');
+                sessionStatus = 'stopped';
+                updateButtons();
+            }
+        }
+
+        function connectToFeedbackStream() {
+            if (!currentSessionId) return;
+
+            const apiToken = document.getElementById('apiToken').value;
+            eventSource = new EventSource(`/api/feedback/stream/${currentSessionId}?api_key=${apiToken}`);
+            
+            eventSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    console.log('Evento recebido:', data);
+                    
+                    switch (data.type) {
+                        case 'feedback_analysis':
+                            if (data.data) {
+                                addFeedbackAnalysis(data.data);
+                                updateContextInfo(data.data.context_info);
+                                addRecordingEvent('💬 Nova análise de feedback PNL recebida', 'success');
+                            }
+                            break;
+                            
+                        case 'recording_update':
+                            if (data.data && data.data.event) {
+                                addRecordingEvent(`🎬 ${data.data.message || data.data.event}`, 'info');
+                            }
+                            break;
+                            
+                        case 'feedback_session_started':
+                            addRecordingEvent('✅ Sessão de feedback iniciada', 'success');
+                            break;
+                            
+                        case 'feedback_recording_complete':
+                            addRecordingEvent('🏁 Gravação com feedback concluída', 'success');
+                            break;
+                            
+                        case 'error':
+                            addRecordingEvent(`❌ Erro: ${data.message}`, 'error');
+                            break;
+                            
+                        case 'heartbeat':
+                            // Heartbeat silencioso
+                            break;
+                            
+                        default:
+                            console.log('Evento não mapeado:', data.type);
+                    }
+                } catch (error) {
+                    console.error('Erro ao processar evento:', error);
+                }
+            };
+            
+            eventSource.onerror = function(event) {
+                console.error('Erro no EventSource:', event);
+                addRecordingEvent('❌ Erro na conexão de stream', 'error');
+            };
+        }
+
+        async function pauseSession() {
+            if (!currentSessionId) return;
+
+            try {
+                const apiToken = document.getElementById('apiToken').value;
+                const response = await fetch(`/api/feedback/session/${currentSessionId}/pause`, {
+                    method: 'POST',
+                    headers: {
+                        'X-API-Token': apiToken
+                    }
+                });
+
+                if (response.ok) {
+                    sessionStatus = 'paused';
+                    updateStatus(`⏸️ Sessão pausada: ${currentSessionId.substring(0, 8)}...`, 'paused');
+                    updateButtons();
+                    addRecordingEvent('⏸️ Análise de feedback pausada', 'info');
+                }
+            } catch (error) {
+                console.error('Erro ao pausar sessão:', error);
+                addRecordingEvent(`❌ Erro ao pausar: ${error.message}`, 'error');
+            }
+        }
+
+        async function resumeSession() {
+            if (!currentSessionId) return;
+
+            try {
+                const apiToken = document.getElementById('apiToken').value;
+                const response = await fetch(`/api/feedback/session/${currentSessionId}/resume`, {
+                    method: 'POST',
+                    headers: {
+                        'X-API-Token': apiToken
+                    }
+                });
+
+                if (response.ok) {
+                    sessionStatus = 'active';
+                    updateStatus(`▶️ Sessão retomada: ${currentSessionId.substring(0, 8)}...`, 'active');
+                    updateButtons();
+                    addRecordingEvent('▶️ Análise de feedback retomada', 'success');
+                }
+            } catch (error) {
+                console.error('Erro ao retomar sessão:', error);
+                addRecordingEvent(`❌ Erro ao retomar: ${error.message}`, 'error');
+            }
+        }
+
+        async function stopSession() {
+            if (!currentSessionId) return;
+
+            try {
+                const apiToken = document.getElementById('apiToken').value;
+                const response = await fetch(`/api/feedback/session/${currentSessionId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'X-API-Token': apiToken
+                    }
+                });
+
+                if (response.ok) {
+                    sessionStatus = 'stopped';
+                    updateStatus('⏹️ Sessão encerrada com sucesso', 'active');
+                    updateButtons();
+                    addRecordingEvent('⏹️ Sessão de feedback encerrada', 'info');
+                    
+                    if (eventSource) {
+                        eventSource.close();
+                        eventSource = null;
+                    }
+                    
+                    currentSessionId = null;
+                }
+            } catch (error) {
+                console.error('Erro ao encerrar sessão:', error);
+                addRecordingEvent(`❌ Erro ao encerrar: ${error.message}`, 'error');
+            }
+        }
+
+        // Inicializar interface
+        updateButtons();
+        updateStatus('🔄 Pronto para iniciar sessão de feedback PNL + Teams', 'active');
+    </script>
+</body>
+</html>

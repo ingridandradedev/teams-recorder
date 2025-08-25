@@ -853,31 +853,47 @@ async def execute_teams_recording_with_feedback(
         )
         await ACTIVE_FEEDBACK_SESSIONS[session_id].put(start_event.dict())
         
-        async for event in gravar_reuniao_stream_async(
-            url, stop_event, segment_time, upload_dest, record_video
+        # Usar a integração correta que processa segmentos para análise PNL
+        async for event in teams_recording_feedback.start_recording_with_feedback(
+            session_id=session_id,
+            teams_url=url,
+            stop_event=stop_event,
+            segment_time=segment_time,
+            upload_dest=upload_dest,
+            record_video=record_video
         ):
-            # Propaga eventos de gravação via SSE
-            feedback_event = SSEEvent(
-                type="recording_update",
-                data={
-                    **event,
-                    "feedback_session_id": session_id,
-                    "feedback_enabled": True
-                },
-                timestamp=time.time()
-            )
+            # Criar evento SSE a partir do evento de gravação/feedback
+            if event.get("event") == "feedback_analysis":
+                feedback_event = SSEEvent(
+                    type="feedback_analysis",
+                    data=event.get("analysis"),
+                    message=event.get("message"),
+                    timestamp=time.time()
+                )
+            else:
+                feedback_event = SSEEvent(
+                    type="recording_update",
+                    data=event,
+                    message=event.get("message"),
+                    timestamp=time.time()
+                )
+            
             await ACTIVE_FEEDBACK_SESSIONS[session_id].put(feedback_event.dict())
             
             # Log apenas eventos importantes
-            if event.get("event") in ["recording_start", "recording_complete", "segment_uploaded"]:
+            if event.get("event") in ["recording_start", "recording_complete", "segment_uploaded", "feedback_analysis"]:
                 logger.info(f"🎬💬 {event.get('message', 'Evento de gravação com feedback')}")
-                
+        
+        # Obter informações finais da sessão
+        final_session = teams_feedback_service.get_feedback_session(session_id)
+        total_segments = final_session.total_chunks if final_session else 0
+        
         # Evento de conclusão
         complete_event = SSEEvent(
             type="feedback_recording_complete",
             data={
                 "session_id": session_id,
-                "total_segments": feedback_session.total_chunks
+                "total_segments": total_segments
             },
             message="Gravação com análise de feedback PNL concluída",
             timestamp=time.time()

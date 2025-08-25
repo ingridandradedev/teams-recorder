@@ -578,7 +578,12 @@ async def gravar_reuniao_stream_async(
 
         # Loop principal de gravação com verificações assíncronas
         inicio_gravacao = time.time()
-        yield {"event": "recording_started", "duration_limit": DURACAO_MAXIMA}
+        yield {
+            "event": "recording_started", 
+            "duration_limit": DURACAO_MAXIMA,
+            "segments_dir": seg_dir,
+            "basename": seg_basename
+        }
 
         while True:
             # Verificar sinal de parada

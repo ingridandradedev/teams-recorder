@@ -58,6 +58,11 @@ class TeamsRecordingWithFeedback:
             # Inicia gravação do Teams
             logger.info(f"Iniciando gravação Teams com feedback PNL: {session_id}")
             
+            # Variáveis para tracking de segmentos processados
+            processed_segments = set()
+            segment_counter = 0
+            current_segments_dir = None
+            
             async for recording_event in gravar_reuniao_stream_async(
                 teams_url, 
                 stop_event, 
@@ -72,15 +77,72 @@ class TeamsRecordingWithFeedback:
                     "feedback_enabled": True
                 }
                 
+                # Capturar diretório de segmentos quando a gravação iniciar
+                if recording_event.get("event") == "recording_started" and recording_event.get("segments_dir"):
+                    current_segments_dir = recording_event.get("segments_dir")
+                    logger.info(f"Monitorando segmentos em: {current_segments_dir}")
+                
+                # Monitorar novos segmentos em intervalos
+                if current_segments_dir and recording_event.get("event") in ["recording_started", "recording_active"]:
+                    try:
+                        import os
+                        import glob
+                        
+                        # Buscar novos arquivos .ts no diretório
+                        pattern = os.path.join(current_segments_dir, "*.ts")
+                        segment_files = glob.glob(pattern)
+                        
+                        for segment_path in segment_files:
+                            segment_name = os.path.basename(segment_path)
+                            
+                            # Processar apenas segmentos novos e completos
+                            if (segment_name not in processed_segments and 
+                                os.path.getsize(segment_path) > 1024):  # Arquivo com pelo menos 1KB
+                                
+                                try:
+                                    # Ler arquivo de segmento
+                                    with open(segment_path, 'rb') as audio_file:
+                                        audio_data = audio_file.read()
+                                    
+                                    # Processar para análise PNL
+                                    analysis_result = await self.feedback_service.process_feedback_audio_with_context(
+                                        session_id, audio_data, "video/MP2T"
+                                    )
+                                    
+                                    if analysis_result:
+                                        segment_counter += 1
+                                        yield {
+                                            "event": "feedback_analysis",
+                                            "session_id": session_id,
+                                            "segment_number": segment_counter,
+                                            "segment_path": segment_path,
+                                            "analysis": analysis_result.model_dump(),
+                                            "message": f"Análise PNL do segmento {segment_counter} concluída"
+                                        }
+                                        logger.info(f"Análise PNL concluída para segmento {segment_counter}: {segment_name}")
+                                    
+                                    processed_segments.add(segment_name)
+                                    
+                                except Exception as e:
+                                    logger.error(f"Erro ao processar segmento {segment_name} para análise PNL: {e}")
+                                    yield {
+                                        "event": "feedback_analysis_error",
+                                        "session_id": session_id,
+                                        "segment_path": segment_path,
+                                        "error": str(e),
+                                        "message": f"Erro na análise PNL do segmento {segment_name}"
+                                    }
+                    
+                    except Exception as e:
+                        logger.error(f"Erro no monitoramento de segmentos: {e}")
+                
                 # Se a gravação for bem-sucedida, gera análise de feedback
-                # Nota: Para análise real, precisaríamos acessar os segmentos de áudio
-                # Por agora, vamos simular baseado nos eventos de gravação
                 if recording_event.get("event") == "recording_complete":
                     yield {
                         "event": "feedback_analysis_complete",
                         "session_id": session_id,
                         "message": "Análise de feedback PNL concluída",
-                        "total_segments": feedback_session.total_chunks
+                        "total_segments": segment_counter
                     }
                 
         except Exception as e:
