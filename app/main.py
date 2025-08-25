@@ -9,7 +9,8 @@ import time
 from datetime import datetime
 from typing import Dict, AsyncGenerator
 from fastapi import FastAPI, Query, Depends, HTTPException, Header, UploadFile, File
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
 # Importar módulos de gravação
@@ -129,6 +130,24 @@ app = FastAPI(
     version="2.3.0",
     lifespan=lifespan
 )
+
+# Configurar arquivos estáticos
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/test_feedback_teams.html")
+async def test_feedback_teams():
+    """Redireciona para a interface de teste de feedback PNL."""
+    return RedirectResponse(url="/static/test_feedback_teams.html", status_code=301)
+
+@app.get("/")
+async def root():
+    """Página inicial da API."""
+    return {
+        "app": "MarIA Recorder API",
+        "version": "2.3.0",
+        "description": "API para gravação de reuniões e análise de feedback PNL",
+        "test_interface": "/test_feedback_teams.html"
+    }
 
 async def verify_api_key(x_api_token: str = Header(None, description="Seu token de API secreto.")):
     """
