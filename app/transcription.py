@@ -171,33 +171,23 @@ class TranscriptionManager:
                 logger.error(f"❌ Arquivo {video_file.name} não ficou ativo a tempo")
                 return None
             
-            # Prompt otimizado para transcrição contínua
+            # Prompt simplificado para focar apenas no essencial
             prompt = f"""
-            Transcreva este segmento de vídeo (segmento #{segment_number}) identificando falas humanas.
+            Transcreva APENAS as falas humanas deste segmento de vídeo.
             
-            INSTRUÇÕES:
-            1. FALANTES: Use o nome real se visível na tela ou mencionado. Se não identificável, use "Participante 1", "Participante 2", etc.
-            2. TIMESTAMPS: Formato HH:MM:SS (baseado no tempo do segmento)
-            3. TEXTO: Transcrição exata do que foi falado
-            4. Mantenha consistência nos nomes dos falantes entre segmentos
-            5. Ignore ruídos de fundo e sons técnicos
-            
-            FORMATO JSON OBRIGATÓRIO (sempre retorne este formato, mesmo se não houver falas):
+            RETORNE SEMPRE NO FORMATO JSON:
             {{
                 "segmentos": [
                     {{
-                        "falante": "Nome do falante",
-                        "timestamp_inicial": "00:00:00",
-                        "timestamp_final": "00:00:05",
-                        "texto": "Texto transcrito exato"
+                        "falante": "Nome do falante ou Participante 1",
+                        "texto": "Texto exato da fala"
                     }}
                 ]
             }}
             
-            Se NÃO houver falas humanas identificáveis, retorne:
-            {{
-                "segmentos": []
-            }}
+            Se NÃO houver falas, retorne: {{"segmentos": []}}
+            
+            IMPORTANTE: Apenas nome do falante e texto da fala. Sem timestamps.
             """
             
             logger.info(f"📡 Enviando solicitação para Gemini 2.5 Pro...")
@@ -314,18 +304,41 @@ class TranscriptionManager:
                 }
                 return
             
-            # Yield dos resultados de transcrição
+            # Yield dos resultados de transcrição com timestamps determinísticos
             segmentos_encontrados = transcricao.get('segmentos', [])
             logger.info(f"📝 Processando {len(segmentos_encontrados)} falas do segmento #{segment_number}")
             
+            # Configuração de timestamps determinísticos
+            # Assumindo que cada segmento tem ~10 segundos (pode ser ajustado)
+            SEGUNDOS_POR_SEGMENTO = 10
+            inicio_segmento_segundos = (segment_number - 1) * SEGUNDOS_POR_SEGMENTO
+            
             for idx, segmento in enumerate(segmentos_encontrados):
+                # Calcular timestamps baseados na posição do segmento
+                # Distribuir as falas ao longo do tempo do segmento
+                if len(segmentos_encontrados) > 1:
+                    duracao_por_fala = SEGUNDOS_POR_SEGMENTO / len(segmentos_encontrados)
+                    inicio_fala = inicio_segmento_segundos + (idx * duracao_por_fala)
+                    fim_fala = inicio_fala + duracao_por_fala
+                else:
+                    # Se só há uma fala no segmento, usar todo o segmento
+                    inicio_fala = inicio_segmento_segundos
+                    fim_fala = inicio_segmento_segundos + SEGUNDOS_POR_SEGMENTO
+                
+                # Converter segundos para formato HH:MM:SS
+                def segundos_para_timestamp(segundos):
+                    horas = int(segundos // 3600)
+                    minutos = int((segundos % 3600) // 60)
+                    segs = int(segundos % 60)
+                    return f"{horas:02d}:{minutos:02d}:{segs:02d}"
+                
                 result = {
                     "event": "transcription_segment",
                     "segment_number": segment_number,
                     "segment_index": idx,
                     "falante": segmento.get('falante', 'Desconhecido'),
-                    "timestamp_inicial": segmento.get('timestamp_inicial', '00:00:00'),
-                    "timestamp_final": segmento.get('timestamp_final', '00:00:00'),
+                    "timestamp_inicial": segundos_para_timestamp(inicio_fala),
+                    "timestamp_final": segundos_para_timestamp(fim_fala),
                     "texto": segmento.get('texto', '')
                 }
                 
