@@ -23,6 +23,9 @@ from app.teams_feedback_service import TeamsFeedbackService
 from app.teams_recording_feedback import TeamsRecordingWithFeedback, process_audio_for_feedback
 from app.feedback_models import SessionInfo, SSEEvent
 
+# Importar novo serviço de transcrição de áudio
+from app.audio_transcription_service import AudioTranscriptionService
+
 # Configurar logging
 logging.basicConfig(
     level=logging.INFO,
@@ -40,6 +43,9 @@ ACTIVE_RECORDINGS: Dict[str, dict] = {}
 # Serviços de feedback PNL
 teams_feedback_service: TeamsFeedbackService = None
 teams_recording_feedback: TeamsRecordingWithFeedback = None
+
+# Serviço de transcrição de áudio
+audio_transcription_service: AudioTranscriptionService = None
 
 # Armazena sessões ativas de feedback
 ACTIVE_FEEDBACK_SESSIONS: Dict[str, asyncio.Queue] = {}
@@ -78,16 +84,19 @@ async def lifespan(app: FastAPI):
         logger.warning("⚠️ GEMINI_API_KEY não configurada! Transcrição e feedback não funcionarão.")
         teams_feedback_service = None
         teams_recording_feedback = None
+        audio_transcription_service = None
     else:
         logger.info("✅ GEMINI_API_KEY configurada para transcrição e feedback")
         try:
             teams_feedback_service = TeamsFeedbackService(gemini_api_key)
             teams_recording_feedback = TeamsRecordingWithFeedback(teams_feedback_service)
-            logger.info("✅ Serviços de feedback PNL inicializados com sucesso")
+            audio_transcription_service = AudioTranscriptionService(gemini_api_key)
+            logger.info("✅ Serviços de feedback PNL e transcrição de áudio inicializados com sucesso")
         except Exception as e:
             logger.error(f"❌ Erro ao inicializar serviços de feedback: {e}")
             teams_feedback_service = None
             teams_recording_feedback = None
+            audio_transcription_service = None
     
     if EXPECTED_API_TOKEN == "b3e59f8b8c4f48d09e0a0ff172b19a43d79ab69e165d0ec7037cbef967de2a3a":
         logger.warning("⚠️ Usando token de API padrão! Configure API_TOKEN para produção.")
@@ -253,6 +262,7 @@ async def get_status(api_key: str = Depends(verify_api_key)):
 def health():
     """Endpoint de health check."""
     feedback_available = teams_feedback_service is not None
+    audio_transcription_available = audio_transcription_service is not None
     return {
         "status": "healthy",
         "version": "2.3.0",
@@ -261,7 +271,8 @@ def health():
         "features": {
             "recording": True,
             "transcription": bool(os.getenv("GEMINI_API_KEY")),
-            "feedback_pnl": feedback_available
+            "feedback_pnl": feedback_available,
+            "audio_transcription": audio_transcription_available
         }
     }
 
@@ -317,6 +328,95 @@ async def iniciar_gravacao_com_transcricao(
         "transcription_stream_url": f"/transcription-stream/{recording_id}",
         "stop_url": f"/stop/{recording_id}"
     }
+
+@app.post("/record-audio-and-transcribe")
+async def record_audio_and_transcribe_meeting(
+    url: str = Query(..., description="URL da reunião do Teams"),
+    segment_time: int = Query(60, description="Segundos por segmento de gravação (ex: 60 ou 300)"),
+    upload_dest: str = Query("audio-recordings", description="Pasta destino no bucket para gravação"),
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Grava áudio da reunião do Teams e faz transcrição completa após finalização.
+    
+    Este endpoint:
+    1. Grava apenas áudio da reunião (sem vídeo para economizar recursos)
+    2. Após a gravação ser finalizada, mescla os segmentos em um arquivo MP3
+    3. Envia o áudio para Gemini 2.0 Flash para transcrição com diarização
+    4. Retorna a transcrição completa na resposta
+    
+    Diferente do /record-and-transcribe que faz transcrição em tempo real,
+    este endpoint faz transcrição completa apenas no final.
+    """
+    
+    # Verificar se serviço está disponível
+    if not audio_transcription_service:
+        raise HTTPException(
+            status_code=400, 
+            detail="Serviço de transcrição de áudio não está disponível. Verifique GEMINI_API_KEY."
+        )
+    
+    recording_id = str(uuid.uuid4())
+    stop_event = asyncio.Event()
+    
+    # Registrar a gravação
+    STOP_EVENTS[recording_id] = stop_event
+    ACTIVE_RECORDINGS[recording_id] = {
+        "url": url,
+        "started_at": asyncio.get_event_loop().time(),
+        "status": "starting",
+        "type": "audio_recording_with_final_transcription"
+    }
+    
+    logger.info(f"🎵📝 Nova gravação de áudio para transcrição iniciada: {recording_id[:8]}... | Total ativo: {len(ACTIVE_RECORDINGS)}")
+    
+    try:
+        # Executar gravação e transcrição (função síncrona, mas aguarda completion)
+        result = await audio_transcription_service.record_and_transcribe_meeting(
+            teams_url=url,
+            stop_event=stop_event,
+            segment_time=segment_time,
+            upload_dest=upload_dest
+        )
+        
+        # Atualizar status
+        if recording_id in ACTIVE_RECORDINGS:
+            ACTIVE_RECORDINGS[recording_id]["status"] = "completed"
+        
+        # Preparar resposta
+        response_data = {
+            "message": "Gravação e transcrição concluídas com sucesso" if result["recording_completed"] else "Gravação não foi concluída adequadamente",
+            "recording_id": recording_id,
+            "recording_completed": result["recording_completed"],
+            "transcription": result["transcription"],
+            "segments_uploaded": len(result["segments_uploaded"]),
+            "segments_info": result["segments_uploaded"],
+            "stop_url": f"/stop/{recording_id}"
+        }
+        
+        # Adicionar erro se houver
+        if result["error"]:
+            response_data["error"] = result["error"]
+        
+        return response_data
+        
+    except Exception as e:
+        logger.error(f"❌ Erro na gravação e transcrição de áudio {recording_id[:8]}...: {e}")
+        
+        # Atualizar status de erro
+        if recording_id in ACTIVE_RECORDINGS:
+            ACTIVE_RECORDINGS[recording_id]["status"] = "error"
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro durante gravação e transcrição: {str(e)}"
+        )
+    
+    finally:
+        # Limpeza
+        STOP_EVENTS.pop(recording_id, None)
+        ACTIVE_RECORDINGS.pop(recording_id, None)
+        logger.info(f"🧹 Gravação de áudio {recording_id[:8]}... finalizada | Total ativo: {len(ACTIVE_RECORDINGS)}")
 
 @app.get("/transcription-stream/{recording_id}", response_class=StreamingResponse)
 async def stream_transcricao(
