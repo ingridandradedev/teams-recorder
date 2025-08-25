@@ -82,49 +82,133 @@ class TeamsRecordingWithFeedback:
                     current_segments_dir = recording_event.get("segments_dir")
                     logger.info(f"Monitorando segmentos em: {current_segments_dir}")
                 
-                # Monitorar novos segmentos em intervalos
-                if current_segments_dir and recording_event.get("event") in ["recording_started", "recording_active"]:
+            # Inicia gravação do Teams
+            logger.info(f"Iniciando gravação Teams com feedback PNL: {session_id}")
+            
+            # Variáveis para tracking de segmentos processados
+            processed_segments = set()
+            segment_counter = 0
+            current_segments_dir = None
+            last_check_time = 0
+            
+            async for recording_event in gravar_reuniao_stream_async(
+                teams_url, 
+                stop_event, 
+                segment_time=segment_time, 
+                upload_dest=upload_dest, 
+                record_video=record_video
+            ):
+                # Propaga eventos de gravação
+                yield {
+                    **recording_event,
+                    "feedback_session_id": session_id,
+                    "feedback_enabled": True
+                }
+                
+                # Capturar diretório de segmentos quando a gravação iniciar
+                if recording_event.get("event") == "recording_started" and recording_event.get("segments_dir"):
+                    current_segments_dir = recording_event.get("segments_dir")
+                    logger.info(f"🎬💬 Monitorando segmentos para análise PNL em: {current_segments_dir}")
+                
+                # Monitorar novos segmentos a cada 5 segundos para não sobrecarregar
+                import time
+                current_time = time.time()
+                
+                if (current_segments_dir and 
+                    recording_event.get("event") in ["recording_started", "recording_active"] and
+                    current_time - last_check_time >= 5):  # Verificar a cada 5 segundos
+                    
+                    last_check_time = current_time
+                    
                     try:
                         import os
                         import glob
+                        import subprocess
+                        import tempfile
                         
                         # Buscar novos arquivos .ts no diretório
                         pattern = os.path.join(current_segments_dir, "*.ts")
-                        segment_files = glob.glob(pattern)
+                        segment_files = sorted(glob.glob(pattern))  # Ordenar por nome
                         
                         for segment_path in segment_files:
                             segment_name = os.path.basename(segment_path)
                             
                             # Processar apenas segmentos novos e completos
                             if (segment_name not in processed_segments and 
-                                os.path.getsize(segment_path) > 1024):  # Arquivo com pelo menos 1KB
+                                os.path.getsize(segment_path) > 50000):  # Pelo menos 50KB (mais realista)
                                 
                                 try:
-                                    # Ler arquivo de segmento
-                                    with open(segment_path, 'rb') as audio_file:
-                                        audio_data = audio_file.read()
+                                    logger.info(f"🎵 Extraindo áudio do segmento: {segment_name}")
                                     
-                                    # Processar para análise PNL
-                                    analysis_result = await self.feedback_service.process_feedback_audio_with_context(
-                                        session_id, audio_data, "video/MP2T"
+                                    # Extrair áudio do segmento .ts usando FFmpeg
+                                    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
+                                        temp_audio_path = temp_audio.name
+                                    
+                                    # Comando FFmpeg otimizado para extrair áudio
+                                    ffmpeg_cmd = [
+                                        'ffmpeg', '-y', '-loglevel', 'error',  # Silencioso
+                                        '-i', segment_path,
+                                        '-vn',  # Sem vídeo
+                                        '-acodec', 'pcm_s16le',  # Codec de áudio WAV
+                                        '-ar', '16000',  # Sample rate 16kHz (otimizado para AI)
+                                        '-ac', '1',  # Mono
+                                        '-t', '60',  # Máximo 60 segundos
+                                        temp_audio_path
+                                    ]
+                                    
+                                    # Executar FFmpeg para extrair áudio
+                                    result = subprocess.run(
+                                        ffmpeg_cmd, 
+                                        capture_output=True, 
+                                        text=True, 
+                                        timeout=15  # Timeout menor
                                     )
                                     
-                                    if analysis_result:
-                                        segment_counter += 1
-                                        yield {
-                                            "event": "feedback_analysis",
-                                            "session_id": session_id,
-                                            "segment_number": segment_counter,
-                                            "segment_path": segment_path,
-                                            "analysis": analysis_result.model_dump(),
-                                            "message": f"Análise PNL do segmento {segment_counter} concluída"
-                                        }
-                                        logger.info(f"Análise PNL concluída para segmento {segment_counter}: {segment_name}")
+                                    if result.returncode == 0 and os.path.exists(temp_audio_path):
+                                        # Ler dados de áudio extraído
+                                        with open(temp_audio_path, 'rb') as audio_file:
+                                            audio_data = audio_file.read()
+                                        
+                                        # Verificar se o áudio tem tamanho válido (WAV tem header de ~44 bytes)
+                                        if len(audio_data) > 1000:  # Pelo menos 1KB de dados úteis
+                                            logger.info(f"🧠 Enviando para análise PNL: {len(audio_data)} bytes de áudio")
+                                            
+                                            # Processar para análise PNL
+                                            analysis_result = await self.feedback_service.process_feedback_audio_with_context(
+                                                session_id, audio_data, "audio/wav"
+                                            )
+                                            
+                                            if analysis_result:
+                                                segment_counter += 1
+                                                yield {
+                                                    "event": "feedback_analysis",
+                                                    "session_id": session_id,
+                                                    "segment_number": segment_counter,
+                                                    "segment_path": segment_path,
+                                                    "audio_duration_estimate": f"~{len(audio_data)//1600:.1f}s",  # Estimativa baseada em 16kHz
+                                                    "analysis": analysis_result.model_dump(),
+                                                    "message": f"Análise PNL do segmento {segment_counter} concluída"
+                                                }
+                                                logger.info(f"✅ Análise PNL concluída para segmento {segment_counter}: {segment_name}")
+                                            else:
+                                                logger.warning(f"⚠️ Análise PNL vazia para segmento {segment_name}")
+                                        else:
+                                            logger.warning(f"⚠️ Áudio extraído muito pequeno para {segment_name}: {len(audio_data)} bytes")
+                                        
+                                        # Limpar arquivo temporário
+                                        try:
+                                            os.unlink(temp_audio_path)
+                                        except:
+                                            pass
+                                    else:
+                                        logger.error(f"❌ Falha na extração de áudio de {segment_name}: {result.stderr}")
                                     
                                     processed_segments.add(segment_name)
                                     
+                                except subprocess.TimeoutExpired:
+                                    logger.error(f"❌ Timeout na extração de áudio de {segment_name}")
                                 except Exception as e:
-                                    logger.error(f"Erro ao processar segmento {segment_name} para análise PNL: {e}")
+                                    logger.error(f"❌ Erro ao processar segmento {segment_name} para análise PNL: {e}")
                                     yield {
                                         "event": "feedback_analysis_error",
                                         "session_id": session_id,
@@ -134,7 +218,7 @@ class TeamsRecordingWithFeedback:
                                     }
                     
                     except Exception as e:
-                        logger.error(f"Erro no monitoramento de segmentos: {e}")
+                        logger.error(f"❌ Erro no monitoramento de segmentos: {e}")
                 
                 # Se a gravação for bem-sucedida, gera análise de feedback
                 if recording_event.get("event") == "recording_complete":
