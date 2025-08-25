@@ -85,6 +85,7 @@ RUN python -m playwright install chromium && chown -R appuser:appuser /ms-playwr
 # chave no tempo de execução (ex.: via secret/volume) e defina
 # GOOGLE_APPLICATION_CREDENTIALS apontando para o caminho montado.
 COPY app/ ./app/
+COPY static/ ./static/
 COPY run.sh ./
 
 # 8. Tornar o run.sh executável e ajustar permissões
