@@ -5,8 +5,10 @@ import uuid
 import threading
 import json
 import logging
+import time
+from datetime import datetime
 from typing import Dict, AsyncGenerator
-from fastapi import FastAPI, Query, Depends, HTTPException, Header
+from fastapi import FastAPI, Query, Depends, HTTPException, Header, UploadFile, File
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
 
@@ -14,6 +16,11 @@ from contextlib import asynccontextmanager
 from app.async_recorder import gravar_reuniao_stream_async
 from app.recording_with_transcription import gravar_com_transcricao_async, get_transcription_stream
 from app.transcription import transcription_tracker
+
+# Importar módulos de feedback
+from app.teams_feedback_service import TeamsFeedbackService
+from app.teams_recording_feedback import TeamsRecordingWithFeedback, process_audio_for_feedback
+from app.feedback_models import SessionInfo, SSEEvent
 
 # Configurar logging
 logging.basicConfig(
@@ -29,11 +36,21 @@ EXPECTED_API_TOKEN = os.getenv("API_TOKEN", "b3e59f8b8c4f48d09e0a0ff172b19a43d79
 STOP_EVENTS: Dict[str, asyncio.Event] = {}
 ACTIVE_RECORDINGS: Dict[str, dict] = {}
 
+# Serviços de feedback PNL
+teams_feedback_service: TeamsFeedbackService = None
+teams_recording_feedback: TeamsRecordingWithFeedback = None
+
+# Armazena sessões ativas de feedback
+ACTIVE_FEEDBACK_SESSIONS: Dict[str, asyncio.Queue] = {}
+FEEDBACK_SESSION_INFO: Dict[str, SessionInfo] = {}
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Gerenciar ciclo de vida da aplicação."""
+    global teams_feedback_service, teams_recording_feedback
+    
     # Startup
-    logger.info("🚀 Iniciando Teams Recorder API v2.2.0")
+    logger.info("🚀 Iniciando Teams Recorder API v2.3.0")
     
     # Verificar configuração Google Cloud
     auth_methods = [
@@ -54,16 +71,27 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("✅ Configuração de autenticação Google Cloud detectada")
     
-    # Verificar configuração Gemini
-    if not os.getenv("GEMINI_API_KEY"):
-        logger.warning("⚠️ GEMINI_API_KEY não configurada! Transcrição não funcionará.")
+    # Verificar configuração Gemini e inicializar serviços de feedback
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    if not gemini_api_key:
+        logger.warning("⚠️ GEMINI_API_KEY não configurada! Transcrição e feedback não funcionarão.")
+        teams_feedback_service = None
+        teams_recording_feedback = None
     else:
-        logger.info("✅ GEMINI_API_KEY configurada para transcrição")
+        logger.info("✅ GEMINI_API_KEY configurada para transcrição e feedback")
+        try:
+            teams_feedback_service = TeamsFeedbackService(gemini_api_key)
+            teams_recording_feedback = TeamsRecordingWithFeedback(teams_feedback_service)
+            logger.info("✅ Serviços de feedback PNL inicializados com sucesso")
+        except Exception as e:
+            logger.error(f"❌ Erro ao inicializar serviços de feedback: {e}")
+            teams_feedback_service = None
+            teams_recording_feedback = None
     
     if EXPECTED_API_TOKEN == "b3e59f8b8c4f48d09e0a0ff172b19a43d79ab69e165d0ec7037cbef967de2a3a":
         logger.warning("⚠️ Usando token de API padrão! Configure API_TOKEN para produção.")
     
-    logger.info(f"📊 Sistema iniciado. Gravações ativas: {len(ACTIVE_RECORDINGS)}")
+    logger.info(f"📊 Sistema iniciado. Gravações ativas: {len(ACTIVE_RECORDINGS)}, Sessões de feedback: {len(ACTIVE_FEEDBACK_SESSIONS)}")
     
     yield
     
@@ -83,12 +111,22 @@ async def lifespan(app: FastAPI):
         # Aguardar um pouco para limpeza
         await asyncio.sleep(2)
     
+    # Encerrar sessões de feedback ativas
+    if ACTIVE_FEEDBACK_SESSIONS and teams_feedback_service:
+        logger.info(f"⏹️ Encerrando {len(ACTIVE_FEEDBACK_SESSIONS)} sessão(ões) de feedback...")
+        for session_id in list(ACTIVE_FEEDBACK_SESSIONS.keys()):
+            try:
+                teams_feedback_service.end_feedback_session(session_id)
+                logger.info(f"⏹️ Sessão de feedback encerrada: {session_id[:8]}...")
+            except Exception as e:
+                logger.error(f"❌ Erro ao encerrar sessão de feedback {session_id[:8]}: {e}")
+    
     logger.info("✅ API encerrada com sucesso")
 
 app = FastAPI(
     title="MarIA Recorder API",
-    description="API para gravação de reuniões do Microsoft Teams com suporte a múltiplas gravações simultâneas e transcrição em tempo real",
-    version="2.2.0",
+    description="API para gravação de reuniões do Microsoft Teams com suporte a múltiplas gravações simultâneas, transcrição e análise de feedback PNL em tempo real",
+    version="2.3.0",
     lifespan=lifespan
 )
 
@@ -195,10 +233,17 @@ async def get_status(api_key: str = Depends(verify_api_key)):
 @app.get("/health")
 def health():
     """Endpoint de health check."""
+    feedback_available = teams_feedback_service is not None
     return {
         "status": "healthy",
-        "version": "2.2.0",
-        "active_recordings": len(ACTIVE_RECORDINGS)
+        "version": "2.3.0",
+        "active_recordings": len(ACTIVE_RECORDINGS),
+        "active_feedback_sessions": len(ACTIVE_FEEDBACK_SESSIONS),
+        "features": {
+            "recording": True,
+            "transcription": bool(os.getenv("GEMINI_API_KEY")),
+            "feedback_pnl": feedback_available
+        }
     }
 
 # =======================================
@@ -398,6 +443,447 @@ async def stream_transcription_data(recording_id: str):
             "Content-Type": "text/event-stream"
         }
     )
+
+
+# =======================================
+# NOVOS ENDPOINTS PARA FEEDBACK PNL INTEGRADO
+# =======================================
+
+@app.post("/api/feedback/start")
+async def start_feedback_session(
+    url: str = Query(..., description="URL da reunião do Teams"),
+    segment_time: int = Query(60, description="Segundos por segmento para análise de áudio"),
+    upload_dest: str = Query("recordings-segments", description="Pasta destino no bucket para segmentos"),
+    record_video: bool = Query(True, description="Se deve capturar vídeo além do áudio"),
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Inicia uma nova sessão de feedback PNL integrada com gravação do Teams.
+    Combina gravação automática do Teams com análise de feedback em tempo real.
+    """
+    
+    if not teams_feedback_service:
+        raise HTTPException(
+            status_code=500, 
+            detail="Serviço de feedback PNL não está disponível. Verifique GEMINI_API_KEY."
+        )
+    
+    session_id = str(uuid.uuid4())
+    stop_event = asyncio.Event()
+    
+    # Registrar a sessão
+    STOP_EVENTS[session_id] = stop_event
+    ACTIVE_RECORDINGS[session_id] = {
+        "url": url,
+        "started_at": asyncio.get_event_loop().time(),
+        "status": "starting",
+        "type": "feedback_pnl_with_teams_recording"
+    }
+    
+    # Criar queue para streaming de eventos
+    ACTIVE_FEEDBACK_SESSIONS[session_id] = asyncio.Queue()
+    
+    # Criar info da sessão
+    FEEDBACK_SESSION_INFO[session_id] = SessionInfo(
+        session_id=session_id,
+        created_at=datetime.now(),
+        status="active"
+    )
+    
+    logger.info(f"🎬💬 Nova sessão de feedback PNL + gravação Teams iniciada: {session_id[:8]}...")
+    
+    # Iniciar gravação com feedback em background
+    asyncio.create_task(
+        execute_teams_recording_with_feedback(
+            session_id, url, stop_event, segment_time, upload_dest, record_video
+        )
+    )
+    
+    return {
+        "sessionId": session_id,
+        "status": "started",
+        "type": "feedback_pnl_with_teams_recording",
+        "teams_url": url,
+        "feedback_stream_url": f"/api/feedback/stream/{session_id}",
+        "stop_url": f"/api/feedback/session/{session_id}",
+        "context_url": f"/api/feedback/context/{session_id}",
+        "message": "Sessão de feedback PNL com gravação do Teams iniciada com sucesso"
+    }
+
+
+@app.post("/api/feedback/process-audio/{session_id}")
+async def process_feedback_audio(
+    session_id: str, 
+    audio: UploadFile = File(...),
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Processa chunk de áudio para análise de feedback PNL contextual.
+    Este endpoint permite upload manual de áudio para análise.
+    """
+    
+    # Valida sessão
+    if session_id not in ACTIVE_FEEDBACK_SESSIONS:
+        raise HTTPException(status_code=404, detail="Sessão de feedback não encontrada")
+    
+    if not teams_feedback_service:
+        raise HTTPException(status_code=500, detail="Serviço de feedback PNL não disponível")
+    
+    try:
+        # Lê o áudio
+        audio_bytes = await audio.read()
+        logger.info(f"Processando áudio de feedback manual: {len(audio_bytes)} bytes, tipo: {audio.content_type}")
+        
+        # Valida formato de áudio
+        if not teams_feedback_service.validate_audio_format(audio.content_type):
+            logger.warning(f"Formato de áudio não suportado: {audio.content_type}")
+        
+        # Processa com análise contextual
+        result = await teams_feedback_service.process_feedback_audio_with_context(
+            session_id=session_id,
+            audio_bytes=audio_bytes, 
+            mime_type=audio.content_type
+        )
+        
+        if result:
+            # Recupera informações de contexto
+            conversation_summary = teams_feedback_service.get_conversation_summary(session_id)
+            
+            # Envia resultado via SSE
+            event = SSEEvent(
+                type="feedback_analysis",
+                data={
+                    **result.dict(),
+                    "context_info": {
+                        "total_segments": conversation_summary.get("total_chunks", 0) if conversation_summary else 0,
+                        "padroes_identificados": len(conversation_summary.get("padroes_identificados", [])) if conversation_summary else 0,
+                        "evolucao_disponivel": bool(conversation_summary.get("evolucao_emocional", []) if conversation_summary else False)
+                    }
+                },
+                timestamp=time.time()
+            )
+            
+            await ACTIVE_FEEDBACK_SESSIONS[session_id].put(event.dict())
+            logger.info(f"Resultado de análise de feedback enviado para sessão {session_id}")
+            
+            return {
+                "status": "processed",
+                "type": "feedback_pnl_analysis",
+                "session_id": session_id,
+                "timestamp": time.time(),
+                "audio_size": len(audio_bytes),
+                "context_segments": conversation_summary.get("total_chunks", 0) if conversation_summary else 0
+            }
+        else:
+            # Erro no processamento
+            error_event = SSEEvent(
+                type="error",
+                message="Erro ao processar áudio para análise de feedback PNL",
+                timestamp=time.time()
+            )
+            
+            await ACTIVE_FEEDBACK_SESSIONS[session_id].put(error_event.dict())
+            
+            return {
+                "status": "error",
+                "message": "Erro no processamento do áudio para feedback PNL"
+            }
+        
+    except Exception as e:
+        logger.error(f"Erro ao processar áudio de feedback: {str(e)}")
+        
+        # Envia erro para a sessão
+        try:
+            error_event = SSEEvent(
+                type="error",
+                message=f"Erro interno no processamento de feedback: {str(e)}",
+                timestamp=time.time()
+            )
+            await ACTIVE_FEEDBACK_SESSIONS[session_id].put(error_event.dict())
+        except:
+            pass
+        
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/feedback/stream/{session_id}")
+async def stream_feedback_updates(
+    session_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """Stream SSE de atualizações da sessão de feedback PNL integrada"""
+    
+    if session_id not in ACTIVE_FEEDBACK_SESSIONS:
+        raise HTTPException(status_code=404, detail="Sessão de feedback não encontrada")
+    
+    async def event_generator():
+        queue = ACTIVE_FEEDBACK_SESSIONS[session_id]
+        logger.info(f"Iniciando stream SSE para sessão de feedback PNL {session_id}")
+        
+        while True:
+            try:
+                # Aguarda próximo evento na queue (com timeout para heartbeat)
+                event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                
+            except asyncio.TimeoutError:
+                # Heartbeat para manter conexão viva
+                heartbeat = SSEEvent(
+                    type="heartbeat",
+                    timestamp=time.time()
+                )
+                yield f"data: {json.dumps(heartbeat.dict())}\n\n"
+                
+            except Exception as e:
+                logger.error(f"Erro no stream SSE de feedback: {str(e)}")
+                error_event = SSEEvent(
+                    type="error",
+                    message=f"Erro na conexão de feedback: {str(e)}",
+                    timestamp=time.time()
+                )
+                yield f"data: {json.dumps(error_event.dict())}\n\n"
+                break
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Cache-Control",
+        }
+    )
+
+
+@app.delete("/api/feedback/session/{session_id}")
+async def end_feedback_session(
+    session_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """Encerra sessão de feedback PNL e para gravação do Teams associada"""
+    
+    # Para a gravação se estiver ativa
+    stop_event = STOP_EVENTS.get(session_id)
+    if stop_event:
+        logger.info(f"⏹️ Parando gravação associada à sessão de feedback: {session_id[:8]}...")
+        stop_event.set()
+    
+    # Encerra sessão contextual no serviço
+    context_ended = False
+    if teams_feedback_service:
+        context_ended = teams_feedback_service.end_feedback_session(session_id)
+    
+    # Remove da lista de sessões ativas
+    if session_id in ACTIVE_FEEDBACK_SESSIONS:
+        del ACTIVE_FEEDBACK_SESSIONS[session_id]
+        logger.info(f"Sessão de feedback encerrada: {session_id}")
+    
+    if session_id in FEEDBACK_SESSION_INFO:
+        FEEDBACK_SESSION_INFO[session_id].status = "ended"
+    
+    # Remove da lista de gravações ativas
+    STOP_EVENTS.pop(session_id, None)
+    ACTIVE_RECORDINGS.pop(session_id, None)
+    
+    return {
+        "status": "session_ended",
+        "sessionId": session_id,
+        "type": "feedback_pnl_with_teams_recording",
+        "context_cleared": context_ended,
+        "recording_stopped": stop_event is not None,
+        "timestamp": time.time()
+    }
+
+
+@app.get("/api/feedback/context/{session_id}")
+async def get_feedback_context(
+    session_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """Retorna o contexto acumulado da sessão de feedback PNL"""
+    
+    if not teams_feedback_service:
+        raise HTTPException(status_code=500, detail="Serviço de feedback PNL não disponível")
+    
+    conversation_summary = teams_feedback_service.get_conversation_summary(session_id)
+    
+    if not conversation_summary:
+        raise HTTPException(status_code=404, detail="Sessão de feedback não encontrada")
+    
+    return {
+        "sessionId": session_id,
+        "context": conversation_summary,
+        "timestamp": time.time()
+    }
+
+
+@app.get("/api/feedback/sessions")
+async def list_feedback_sessions(api_key: str = Depends(verify_api_key)):
+    """Lista todas as sessões de feedback PNL ativas"""
+    
+    # Inclui informações de contexto se disponível
+    context_info = {}
+    if teams_feedback_service:
+        for session_id in ACTIVE_FEEDBACK_SESSIONS.keys():
+            summary = teams_feedback_service.get_conversation_summary(session_id)
+            if summary:
+                context_info[session_id] = {
+                    "total_segments": summary.get("total_chunks", 0),
+                    "patterns_count": len(summary.get("padroes_identificados", [])),
+                    "themes_count": len(summary.get("temas_recorrentes", [])),
+                    "teams_url": summary.get("teams_url"),
+                    "recording_id": summary.get("recording_id")
+                }
+    
+    return {
+        "active_feedback_sessions": list(ACTIVE_FEEDBACK_SESSIONS.keys()),
+        "feedback_session_count": len(ACTIVE_FEEDBACK_SESSIONS),
+        "feedback_sessions_info": {
+            sid: info.dict() for sid, info in FEEDBACK_SESSION_INFO.items()
+        },
+        "context_info": context_info,
+        "service_available": teams_feedback_service is not None
+    }
+
+
+@app.post("/api/feedback/session/{session_id}/pause")
+async def pause_feedback_session(
+    session_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """Pausa uma sessão de feedback PNL ativa"""
+    
+    if not teams_feedback_service:
+        raise HTTPException(status_code=500, detail="Serviço de feedback PNL não disponível")
+    
+    success = teams_feedback_service.pause_feedback_session(session_id)
+    
+    if not success:
+        raise HTTPException(status_code=404, detail="Sessão de feedback não encontrada")
+    
+    # Atualiza info da sessão
+    if session_id in FEEDBACK_SESSION_INFO:
+        FEEDBACK_SESSION_INFO[session_id].status = "paused"
+    
+    return {
+        "status": "paused",
+        "sessionId": session_id,
+        "message": "Sessão de feedback pausada com sucesso",
+        "timestamp": time.time()
+    }
+
+
+@app.post("/api/feedback/session/{session_id}/resume")
+async def resume_feedback_session(
+    session_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """Retoma uma sessão de feedback PNL pausada"""
+    
+    if not teams_feedback_service:
+        raise HTTPException(status_code=500, detail="Serviço de feedback PNL não disponível")
+    
+    success = teams_feedback_service.resume_feedback_session(session_id)
+    
+    if not success:
+        raise HTTPException(status_code=404, detail="Sessão de feedback não encontrada")
+    
+    # Atualiza info da sessão
+    if session_id in FEEDBACK_SESSION_INFO:
+        FEEDBACK_SESSION_INFO[session_id].status = "active"
+    
+    return {
+        "status": "resumed",
+        "sessionId": session_id,
+        "message": "Sessão de feedback retomada com sucesso",
+        "timestamp": time.time()
+    }
+
+
+async def execute_teams_recording_with_feedback(
+    session_id: str,
+    url: str,
+    stop_event: asyncio.Event,
+    segment_time: int,
+    upload_dest: str,
+    record_video: bool
+):
+    """
+    Executa a gravação do Teams com análise de feedback PNL em background.
+    Esta função roda assincronamente e envia eventos via SSE.
+    """
+    try:
+        # Inicia sessão de feedback no serviço
+        feedback_session = teams_feedback_service.create_feedback_session(
+            session_id=session_id,
+            teams_url=url,
+            recording_id=session_id
+        )
+        
+        # Envia evento de início
+        start_event = SSEEvent(
+            type="feedback_session_started",
+            data={
+                "session_id": session_id,
+                "teams_url": url,
+                "feedback_enabled": True
+            },
+            message="Sessão de feedback PNL iniciada com gravação do Teams",
+            timestamp=time.time()
+        )
+        await ACTIVE_FEEDBACK_SESSIONS[session_id].put(start_event.dict())
+        
+        async for event in gravar_reuniao_stream_async(
+            url, stop_event, segment_time, upload_dest, record_video
+        ):
+            # Propaga eventos de gravação via SSE
+            feedback_event = SSEEvent(
+                type="recording_update",
+                data={
+                    **event,
+                    "feedback_session_id": session_id,
+                    "feedback_enabled": True
+                },
+                timestamp=time.time()
+            )
+            await ACTIVE_FEEDBACK_SESSIONS[session_id].put(feedback_event.dict())
+            
+            # Log apenas eventos importantes
+            if event.get("event") in ["recording_start", "recording_complete", "segment_uploaded"]:
+                logger.info(f"🎬💬 {event.get('message', 'Evento de gravação com feedback')}")
+                
+        # Evento de conclusão
+        complete_event = SSEEvent(
+            type="feedback_recording_complete",
+            data={
+                "session_id": session_id,
+                "total_segments": feedback_session.total_chunks
+            },
+            message="Gravação com análise de feedback PNL concluída",
+            timestamp=time.time()
+        )
+        await ACTIVE_FEEDBACK_SESSIONS[session_id].put(complete_event.dict())
+                
+    except Exception as e:
+        logger.error(f"❌ Erro na execução de gravação com feedback {session_id[:8]}...: {e}")
+        
+        # Envia erro via SSE
+        error_event = SSEEvent(
+            type="error",
+            message=f"Erro na gravação com feedback: {str(e)}",
+            timestamp=time.time()
+        )
+        try:
+            await ACTIVE_FEEDBACK_SESSIONS[session_id].put(error_event.dict())
+        except:
+            pass
+        
+    finally:
+        # Limpeza
+        STOP_EVENTS.pop(session_id, None)
+        ACTIVE_RECORDINGS.pop(session_id, None)
+        logger.info(f"🧹 Gravação com feedback {session_id[:8]}... finalizada | Total ativo: {len(ACTIVE_RECORDINGS)}")
 
 
 if __name__ == "__main__":
