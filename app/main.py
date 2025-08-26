@@ -80,6 +80,10 @@ async def lifespan(app: FastAPI):
     
     # Verificar configuração Gemini e inicializar serviços de feedback
     gemini_api_key = os.getenv("GEMINI_API_KEY")
+    logger.info(f"🔍 Debug - GEMINI_API_KEY presente: {bool(gemini_api_key)}")
+    if gemini_api_key:
+        logger.info(f"🔍 Debug - GEMINI_API_KEY primeiros 10 chars: {gemini_api_key[:10]}...")
+    
     if not gemini_api_key:
         logger.warning("⚠️ GEMINI_API_KEY não configurada! Transcrição e feedback não funcionarão.")
         teams_feedback_service = None
@@ -92,8 +96,10 @@ async def lifespan(app: FastAPI):
             teams_recording_feedback = TeamsRecordingWithFeedback(teams_feedback_service)
             audio_transcription_service = AudioTranscriptionService(gemini_api_key)
             logger.info("✅ Serviços de feedback PNL e transcrição de áudio inicializados com sucesso")
+            logger.info(f"🔍 Debug - audio_transcription_service criado: {audio_transcription_service is not None}")
         except Exception as e:
             logger.error(f"❌ Erro ao inicializar serviços de feedback: {e}")
+            logger.error(f"🔍 Debug - Exceção completa: {str(e)}")
             teams_feedback_service = None
             teams_recording_feedback = None
             audio_transcription_service = None
@@ -350,7 +356,9 @@ async def record_audio_and_transcribe_meeting(
     """
     
     # Verificar se serviço está disponível
+    logger.info(f"🔍 Debug endpoint - audio_transcription_service: {audio_transcription_service is not None}")
     if not audio_transcription_service:
+        logger.error("🔍 Debug endpoint - Serviço de transcrição não está disponível")
         raise HTTPException(
             status_code=400, 
             detail="Serviço de transcrição de áudio não está disponível. Verifique GEMINI_API_KEY."
