@@ -365,12 +365,13 @@ async def record_audio_and_transcribe_meeting(
     este endpoint faz transcrição completa apenas no final.
     """
     
+    global audio_transcription_service
+    
     # Verificar se serviço está disponível
     logger.info(f"🔍 Debug endpoint - audio_transcription_service: {audio_transcription_service is not None}")
     
     # Se o serviço não foi inicializado, tentar inicializar agora
     if not audio_transcription_service:
-        global audio_transcription_service
         logger.warning("🔍 Debug endpoint - Tentando inicializar serviço agora...")
         gemini_api_key = os.getenv("GEMINI_API_KEY")
         logger.info(f"🔍 Debug endpoint - GEMINI_API_KEY presente: {bool(gemini_api_key)}")
