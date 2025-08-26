@@ -14,9 +14,21 @@ class SupabasePersistenceService:
     """Serviço para persistência de sessões de feedback PNL no Supabase"""
     
     def __init__(self):
-        self.database_url = os.getenv("SUPABASE_DATABASE_URL")
-        if not self.database_url:
-            raise ValueError("SUPABASE_DATABASE_URL não configurada nas variáveis de ambiente")
+        # Construir connection string a partir de variáveis individuais
+        self.host = os.getenv("SUPABASE_DB_HOST")
+        self.port = os.getenv("SUPABASE_DB_PORT", "6543")
+        self.database = os.getenv("SUPABASE_DB_NAME", "postgres")
+        self.user = os.getenv("SUPABASE_DB_USER")
+        self.password = os.getenv("SUPABASE_DB_PASSWORD")
+        
+        if not all([self.host, self.user, self.password]):
+            raise ValueError(
+                "Variáveis de ambiente do Supabase não configuradas: "
+                "SUPABASE_DB_HOST, SUPABASE_DB_USER, SUPABASE_DB_PASSWORD são obrigatórias"
+            )
+        
+        # Construir URL de conexão
+        self.database_url = f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.database}"
         
         self.pool = None
         logger.info("🗄️ Serviço de persistência Supabase inicializado")
@@ -100,17 +112,15 @@ class SupabasePersistenceService:
     
     async def update_feedback_context(
         self,
-        session_id: str,
-        context: ConversationContext,
-        total_chunks: int = 0
+        recording_session_id: str,
+        analysis_data: Dict[str, Any]
     ) -> bool:
         """
         Atualiza o contexto de feedback PNL na sessão.
         
         Args:
-            session_id: ID da sessão de feedback
-            context: Contexto da conversa
-            total_chunks: Número total de chunks processados
+            recording_session_id: ID da recording_session no banco
+            analysis_data: Dados da análise de feedback
         
         Returns:
             True se atualizou com sucesso, False caso contrário
@@ -119,50 +129,24 @@ class SupabasePersistenceService:
             if not self.pool:
                 await self.initialize_pool()
             
-            # Serializar contexto para JSON
-            context_dict = {
-                "session_id": context.session_id,
-                "contexto_acumulado": context.contexto_acumulado,
-                "padroes_identificados": context.padroes_identificados,
-                "evolucao_emocional": context.evolucao_emocional,
-                "temas_recorrentes": context.temas_recorrentes,
-                "created_at": context.created_at.isoformat(),
-                "last_updated": context.last_updated.isoformat(),
-                "teams_url": context.teams_url,
-                "recording_id": context.recording_id,
-                "total_chunks": len(context.chunks)
-            }
-            
-            # Estatísticas da sessão
-            session_stats = {
-                "total_patterns": len(context.padroes_identificados),
-                "emotional_states": len(context.evolucao_emocional),
-                "recurring_themes": len(context.temas_recorrentes),
-                "last_analysis": datetime.now().isoformat()
-            }
-            
             async with self.pool.acquire() as conn:
                 result = await conn.execute(
                     """
                     UPDATE recording_sessions 
                     SET 
                         feedback_context = $1,
-                        total_chunks = $2,
-                        session_stats = $3,
                         updated_at = now()
-                    WHERE session_id = $4
+                    WHERE id = $2
                     """,
-                    json.dumps(context_dict),
-                    total_chunks,
-                    json.dumps(session_stats),
-                    session_id
+                    json.dumps(analysis_data),
+                    recording_session_id
                 )
                 
                 if result == "UPDATE 1":
-                    logger.info(f"✅ Contexto de feedback atualizado para sessão {session_id} ({total_chunks} chunks)")
+                    logger.info(f"✅ Contexto de feedback atualizado para recording_session {recording_session_id}")
                     return True
                 else:
-                    logger.warning(f"⚠️ Nenhuma sessão encontrada para atualizar: {session_id}")
+                    logger.warning(f"⚠️ Nenhuma sessão encontrada para atualizar: {recording_session_id}")
                     return False
                     
         except Exception as e:
@@ -301,6 +285,155 @@ class SupabasePersistenceService:
             logger.error(f"❌ Erro ao salvar gravação final: {e}")
             return False
     
+    async def get_recording_session_by_session_id(self, session_id: str) -> Optional[Dict]:
+        """
+        Busca uma sessão de gravação pelo session_id.
+        
+        Args:
+            session_id: ID da sessão
+        
+        Returns:
+            Dados da sessão ou None se não encontrada
+        """
+        try:
+            if not self.pool:
+                await self.initialize_pool()
+            
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT * FROM recording_sessions 
+                    WHERE session_id = $1
+                    ORDER BY created_at DESC 
+                    LIMIT 1
+                    """,
+                    session_id
+                )
+                
+                if row:
+                    return dict(row)
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Erro ao buscar sessão por session_id {session_id}: {e}")
+            return None
+
+    async def get_recordings_by_meeting_session(self, meeting_session_id: str) -> list:
+        """
+        Busca todas as gravações de uma reunião específica.
+        
+        Args:
+            meeting_session_id: ID da reunião
+        
+        Returns:
+            Lista de gravações
+        """
+        try:
+            if not self.pool:
+                await self.initialize_pool()
+            
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM recording_sessions 
+                    WHERE meeting_session_id = $1
+                    ORDER BY created_at DESC
+                    """,
+                    meeting_session_id
+                )
+                
+                return [dict(row) for row in rows]
+                
+        except Exception as e:
+            logger.error(f"❌ Erro ao buscar gravações da reunião {meeting_session_id}: {e}")
+            return []
+
+    async def update_recording_session_status(self, recording_session_id: str, status: str) -> bool:
+        """
+        Atualiza o status de uma sessão de gravação pelo recording_session_id.
+        
+        Args:
+            recording_session_id: ID da recording_session no banco
+            status: Novo status
+        
+        Returns:
+            True se atualizou com sucesso
+        """
+        try:
+            if not self.pool:
+                await self.initialize_pool()
+            
+            async with self.pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    UPDATE recording_sessions 
+                    SET status = $1, updated_at = now()
+                    WHERE id = $2
+                    """,
+                    status, recording_session_id
+                )
+                
+                if result == "UPDATE 1":
+                    logger.info(f"✅ Status atualizado para {status} na sessão {recording_session_id}")
+                    return True
+                else:
+                    logger.warning(f"⚠️ Nenhuma sessão encontrada para atualizar: {recording_session_id}")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"❌ Erro ao atualizar status da sessão: {e}")
+            return False
+
+    async def save_final_recording(
+        self, 
+        recording_session_id: str, 
+        recording_url: str, 
+        public_url: str = None,
+        total_segments: int = 0
+    ) -> bool:
+        """
+        Salva as URLs da gravação final.
+        
+        Args:
+            recording_session_id: ID da recording_session
+            recording_url: URL da gravação (gs://)
+            public_url: URL pública da gravação
+            total_segments: Total de segmentos processados
+        
+        Returns:
+            True se salvou com sucesso
+        """
+        try:
+            if not self.pool:
+                await self.initialize_pool()
+            
+            async with self.pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    UPDATE recording_sessions 
+                    SET 
+                        recording_url = $1,
+                        public_url = $2,
+                        total_segments = $3,
+                        status = 'completed',
+                        ended_at = now(),
+                        updated_at = now()
+                    WHERE id = $4
+                    """,
+                    recording_url, public_url or recording_url, total_segments, recording_session_id
+                )
+                
+                if result == "UPDATE 1":
+                    logger.info(f"✅ Gravação final salva para sessão {recording_session_id}: {recording_url}")
+                    return True
+                else:
+                    logger.warning(f"⚠️ Nenhuma sessão encontrada para salvar gravação: {recording_session_id}")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"❌ Erro ao salvar gravação final: {e}")
+            return False
+
     async def get_recording_session(self, session_id: str) -> Optional[Dict]:
         """
         Recupera informações de uma sessão de gravação.
