@@ -40,7 +40,8 @@ class SupabasePersistenceService:
                 self.database_url,
                 min_size=2,
                 max_size=10,
-                command_timeout=30
+                command_timeout=30,
+                statement_cache_size=0  # Disable prepared statements for pgbouncer compatibility
             )
             logger.info("✅ Pool de conexões Supabase criado com sucesso")
         except Exception as e:
