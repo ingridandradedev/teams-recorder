@@ -738,7 +738,7 @@ async def start_feedback_session(
     return FeedbackSessionResponse(
         session_id=session_id,
         recording_session_id=recording_session_id,
-        status="started",
+        status="active",
         type="feedback_pnl_with_teams_recording",
         teams_url=request.teams_url,
         meeting_session_id=request.meeting_session_id,
@@ -1139,7 +1139,7 @@ async def execute_teams_recording_with_feedback(
         try:
             persistence_service = await get_persistence_service()
             await persistence_service.update_recording_session_status(
-                recording_session_id, "recording"
+                recording_session_id, "active"
             )
         except Exception as e:
             logger.warning(f"⚠️ Erro ao atualizar status inicial: {e}")
@@ -1274,7 +1274,7 @@ async def execute_teams_recording_with_feedback(
         try:
             persistence_service = await get_persistence_service()
             await persistence_service.update_recording_session_status(
-                recording_session_id, "error"
+                recording_session_id, "failed"
             )
         except Exception as db_error:
             logger.warning(f"⚠️ Erro ao atualizar status de erro: {db_error}")

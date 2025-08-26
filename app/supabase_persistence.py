@@ -94,13 +94,14 @@ class SupabasePersistenceService:
                     """
                     INSERT INTO recording_sessions (
                         meeting_session_id, session_id, teams_url, 
-                        segment_time, record_video, upload_dest,
+                        source_type, segment_time, record_video, upload_dest,
                         status, feedback_context, recording_metadata
-                    ) VALUES ($1, $2, $3, $4, $5, $6, 'active', '{}', '{}')
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                     RETURNING id
                     """,
                     meeting_session_id, session_id, teams_url,
-                    segment_time, record_video, upload_dest
+                    'live_recording', segment_time, record_video, upload_dest,
+                    'active', '{}', '{}'
                 )
                 
                 logger.info(f"✅ Sessão de gravação criada: {recording_id} (session_id: {session_id})")
