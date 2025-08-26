@@ -1175,17 +1175,30 @@ async def execute_teams_recording_with_feedback(
             upload_dest=upload_dest,
             record_video=record_video
         ):
+            # Log todos os eventos recebidos para debug
+            logger.info(f"🎬💬 Evento: {event.get('event', 'unknown')}")
+            
             # Salvar contexto de feedback no banco se disponível
             if event.get("event") == "feedback_analysis":
+                logger.info(f"📊 Processando evento de análise de feedback para recording_session_id: {recording_session_id}")
                 try:
                     analysis_data = event.get("analysis", {})
                     if analysis_data:
+                        logger.info(f"💾 Salvando contexto de feedback no banco (dados presentes: {len(str(analysis_data))} chars)")
                         persistence_service = await get_persistence_service()
-                        await persistence_service.update_feedback_context(
+                        update_success = await persistence_service.update_feedback_context(
                             recording_session_id, analysis_data
                         )
+                        if update_success:
+                            logger.info(f"✅ Contexto de feedback salvo com sucesso no banco")
+                        else:
+                            logger.error(f"❌ Falha ao salvar contexto de feedback no banco")
+                    else:
+                        logger.warning(f"⚠️ Dados de análise vazios no evento feedback_analysis")
                 except Exception as e:
-                    logger.warning(f"⚠️ Erro ao salvar contexto de feedback: {e}")
+                    logger.error(f"❌ Erro ao salvar contexto de feedback: {e}")
+                    import traceback
+                    logger.error(f"❌ Stack trace: {traceback.format_exc()}")
                     
                 feedback_event = SSEEvent(
                     type="feedback_analysis",

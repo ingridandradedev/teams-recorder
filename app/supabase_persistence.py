@@ -131,12 +131,28 @@ class SupabasePersistenceService:
             if not self.pool:
                 await self.initialize_pool()
             
+            logger.info(f"🔄 Tentando atualizar contexto de feedback para recording_session_id: {recording_session_id}")
+            logger.info(f"📊 Dados da análise (tamanho): {len(json.dumps(analysis_data))} characters")
+            
             async with self.pool.acquire() as conn:
+                # Primeiro verificar se a sessão existe
+                session_check = await conn.fetchrow(
+                    "SELECT id, session_id FROM recording_sessions WHERE id = $1",
+                    recording_session_id
+                )
+                
+                if not session_check:
+                    logger.error(f"❌ Recording session não encontrada: {recording_session_id}")
+                    return False
+                
+                logger.info(f"✅ Recording session encontrada: {session_check['session_id']}")
+                
                 result = await conn.execute(
                     """
                     UPDATE recording_sessions 
                     SET 
                         feedback_context = $1,
+                        total_chunks = COALESCE(total_chunks, 0) + 1,
                         updated_at = now()
                     WHERE id = $2
                     """,
@@ -146,13 +162,16 @@ class SupabasePersistenceService:
                 
                 if result == "UPDATE 1":
                     logger.info(f"✅ Contexto de feedback atualizado para recording_session {recording_session_id}")
+                    logger.info(f"📈 Total chunks incrementado para sessão {session_check['session_id']}")
                     return True
                 else:
-                    logger.warning(f"⚠️ Nenhuma sessão encontrada para atualizar: {recording_session_id}")
+                    logger.warning(f"⚠️ Update não afetou nenhuma linha para recording_session: {recording_session_id}")
                     return False
                     
         except Exception as e:
             logger.error(f"❌ Erro ao atualizar contexto de feedback: {e}")
+            import traceback
+            logger.error(f"❌ Stack trace: {traceback.format_exc()}")
             return False
     
     async def update_session_status(
