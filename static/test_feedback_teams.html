@@ -298,6 +298,11 @@
                 <h3>🎬 Eventos de Gravação</h3>
                 <div id="recordingEvents" class="recording-events"></div>
             </div>
+            
+            <div class="result-section" id="finalUrlSection" style="display: none;">
+                <h3>📹 Arquivo Final</h3>
+                <div id="finalUrl" class="final-url" style="padding: 15px; background: #e8f5e8; border-radius: 8px; border-left: 4px solid #28a745;"></div>
+            </div>
         </div>
     </div>
 
@@ -467,6 +472,19 @@
                         case 'recording_update':
                             if (data.data && data.data.event) {
                                 addRecordingEvent(`🎬 ${data.data.message || data.data.event}`, 'info');
+                                
+                                // Capturar URL final da gravação dos eventos de recording_update
+                                if ((data.data.event === 'recording_completed' || data.data.event === 'recording_stopped') && data.data.file_url) {
+                                    addRecordingEvent(`📹 Gravação finalizada: <a href="${data.data.file_url}" target="_blank" style="color: #28a745; text-decoration: underline;">Ver arquivo</a>`, 'success');
+                                }
+                            }
+                            break;
+                            
+                        case 'final_recording_url':
+                            if (data.data && data.data.file_url) {
+                                addRecordingEvent(`📹 Link da gravação: <a href="${data.data.file_url}" target="_blank" style="color: #28a745; text-decoration: underline; font-weight: bold;">Clique para baixar/assistir</a>`, 'success');
+                                document.getElementById('finalUrl').innerHTML = `<strong>🎯 Arquivo Final:</strong> <a href="${data.data.file_url}" target="_blank" style="color: #007bff;">Clique aqui para acessar a gravação</a>`;
+                                document.getElementById('finalUrlSection').style.display = 'block';
                             }
                             break;
                             
@@ -487,7 +505,7 @@
                             break;
                             
                         default:
-                            console.log('Evento não mapeado:', data.type);
+                            console.log('Evento não mapeado:', data.type, data);
                     }
                 } catch (error) {
                     console.error('Erro ao processar evento:', error);

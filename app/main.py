@@ -1014,6 +1014,19 @@ async def execute_teams_recording_with_feedback(
                     message=event.get("message"),
                     timestamp=time.time()
                 )
+            elif event.get("event") == "feedback_final_recording":
+                # Evento especial para gravação final com link
+                feedback_event = SSEEvent(
+                    type="final_recording_url",
+                    data={
+                        "file_url": event.get("file_url"),
+                        "public_url": event.get("public_url", event.get("file_url")),
+                        "session_id": session_id,
+                        "total_segments": event.get("total_segments", 0)
+                    },
+                    message=event.get("message", "Gravação finalizada"),
+                    timestamp=time.time()
+                )
             else:
                 feedback_event = SSEEvent(
                     type="recording_update",
@@ -1024,9 +1037,15 @@ async def execute_teams_recording_with_feedback(
             
             await ACTIVE_FEEDBACK_SESSIONS[session_id].put(feedback_event.dict())
             
-            # Log apenas eventos importantes
-            if event.get("event") in ["recording_start", "recording_complete", "segment_uploaded", "feedback_analysis"]:
-                logger.info(f"🎬💬 {event.get('message', 'Evento de gravação com feedback')}")
+            # Log eventos importantes
+            event_name = event.get("event", "unknown")
+            if event_name in ["recording_started", "recording_completed", "recording_stopped", "feedback_analysis", "feedback_final_recording"]:
+                logger.info(f"🎬💬 {event.get('message', f'Evento: {event_name}')}")
+            
+            # Se for evento final, adicionar informações extras
+            if event_name in ["recording_completed", "recording_stopped", "feedback_final_recording"]:
+                if event.get("file_url"):
+                    logger.info(f"📹 URL da gravação final: {event.get('file_url')}")
         
         # Obter informações finais da sessão
         final_session = teams_feedback_service.get_feedback_session(session_id)

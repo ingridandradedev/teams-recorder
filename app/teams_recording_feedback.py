@@ -66,6 +66,7 @@ class TeamsRecordingWithFeedback:
             processed_segments = set()
             segment_counter = 0
             current_segments_dir = None
+            segment_monitor_task = None
             
             async for recording_event in gravar_reuniao_stream_async(
                 teams_url, 
@@ -81,96 +82,37 @@ class TeamsRecordingWithFeedback:
                     "feedback_enabled": True
                 }
                 
-                # Capturar diretório de segmentos quando a gravação iniciar
+                # Capturar diretório de segmentos e iniciar monitoramento quando a gravação iniciar
                 if recording_event.get("event") == "recording_started" and recording_event.get("segments_dir"):
                     current_segments_dir = recording_event.get("segments_dir")
-                    logger.info(f"Monitorando segmentos em: {current_segments_dir}")
-                
-                # Monitorar novos segmentos em intervalos
-                if current_segments_dir and recording_event.get("event") in ["recording_started", "recording_active"]:
-                    try:
-                        # Buscar novos arquivos .ts no diretório
-                        pattern = os.path.join(current_segments_dir, "*.ts")
-                        segment_files = glob.glob(pattern)
-                        
-                        for segment_path in segment_files:
-                            segment_name = os.path.basename(segment_path)
-                            
-                            # Processar apenas segmentos novos e completos
-                            if (segment_name not in processed_segments and 
-                                os.path.getsize(segment_path) > 1024):  # Arquivo com pelo menos 1KB
-                                
-                                try:
-                                    # Extrair áudio do segmento .ts para análise PNL
-                                    # Criar arquivo temporário para áudio extraído
-                                    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
-                                        temp_audio_path = temp_audio.name
-                                    
-                                    try:
-                                        # Extrair áudio do segmento .ts usando FFmpeg
-                                        cmd = [
-                                            "ffmpeg", "-i", segment_path,
-                                            "-vn",  # Sem vídeo
-                                            "-acodec", "pcm_s16le",  # Codec de áudio WAV
-                                            "-ar", "16000",  # Taxa de amostragem 16kHz
-                                            "-ac", "1",  # Mono
-                                            "-y",  # Sobrescrever arquivo
-                                            temp_audio_path
-                                        ]
-                                        
-                                        result = subprocess.run(
-                                            cmd, 
-                                            capture_output=True, 
-                                            text=True, 
-                                            timeout=30
-                                        )
-                                        
-                                        if result.returncode == 0 and os.path.exists(temp_audio_path):
-                                            # Ler arquivo de áudio extraído
-                                            with open(temp_audio_path, 'rb') as audio_file:
-                                                audio_data = audio_file.read()
-                                            
-                                            # Processar para análise PNL
-                                            analysis_result = await self.feedback_service.process_feedback_audio_with_context(
-                                                session_id, audio_data, "audio/wav"
-                                            )
-                                            
-                                            if analysis_result:
-                                                segment_counter += 1
-                                                yield {
-                                                    "event": "feedback_analysis",
-                                                    "session_id": session_id,
-                                                    "segment_number": segment_counter,
-                                                    "segment_path": segment_path,
-                                                    "analysis": analysis_result.model_dump(),
-                                                    "message": f"Análise PNL do segmento {segment_counter} concluída"
-                                                }
-                                                logger.info(f"Análise PNL concluída para segmento {segment_counter}: {segment_name}")
-                                            
-                                            processed_segments.add(segment_name)
-                                        else:
-                                            logger.error(f"Erro na extração de áudio do segmento {segment_name}: {result.stderr}")
-                                    
-                                    finally:
-                                        # Remover arquivo temporário
-                                        if os.path.exists(temp_audio_path):
-                                            os.unlink(temp_audio_path)
-                                    
-                                except Exception as e:
-                                    logger.error(f"Erro ao processar segmento {segment_name} para análise PNL: {e}")
-                                    yield {
-                                        "event": "feedback_analysis_error",
-                                        "session_id": session_id,
-                                        "segment_path": segment_path,
-                                        "error": str(e),
-                                        "message": f"Erro na análise PNL do segmento {segment_name}"
-                                    }
+                    logger.info(f"📁 Monitorando segmentos para análise PNL em: {current_segments_dir}")
                     
-                    except Exception as e:
-                        logger.error(f"Erro no monitoramento de segmentos: {e}")
+                    # Iniciar task de monitoramento de segmentos em background
+                    segment_monitor_task = asyncio.create_task(
+                        self._monitor_segments_for_feedback(
+                            current_segments_dir,
+                            session_id,
+                            stop_event,
+                            processed_segments
+                        )
+                    )
                 
-                # Se a gravação for bem-sucedida, gera análise de feedback
+                # Capturar eventos de análises do monitor
+                if recording_event.get("event") == "feedback_analysis":
+                    segment_counter += 1
+                    yield recording_event
+                
+                # Se a gravação for finalizada, processar últimos segmentos
                 if recording_event.get("event") in ["recording_completed", "recording_stopped"]:
+                    logger.info(f"🏁 Gravação finalizada, processando segmentos finais...")
+                    
+                    # Aguardar conclusão do monitoramento
+                    if segment_monitor_task and not segment_monitor_task.done():
+                        try:
+                            await asyncio.wait_for(segment_monitor_task, timeout=10.0)
+                        except asyncio.TimeoutError:
+                            logger.warning("Timeout ao aguardar finalização do monitoramento de segmentos")
+                    
                     # Enviar link do arquivo final se disponível
                     file_url = recording_event.get("file_url")
                     if file_url:
@@ -178,15 +120,17 @@ class TeamsRecordingWithFeedback:
                             "event": "feedback_final_recording",
                             "session_id": session_id,
                             "file_url": file_url,
-                            "message": "Gravação com feedback PNL finalizada",
-                            "total_segments": segment_counter
+                            "public_url": file_url,  # Compatibilidade
+                            "message": "Gravação com feedback PNL finalizada - Link disponível",
+                            "total_segments": len(processed_segments)
                         }
+                        logger.info(f"📹 URL final da gravação: {file_url}")
                     
                     yield {
                         "event": "feedback_analysis_complete",
                         "session_id": session_id,
                         "message": "Análise de feedback PNL concluída",
-                        "total_segments": segment_counter
+                        "total_segments": len(processed_segments)
                     }
                 
         except Exception as e:
@@ -200,6 +144,106 @@ class TeamsRecordingWithFeedback:
         
         finally:
             logger.info(f"Finalizando gravação com feedback: {session_id}")
+
+    async def _monitor_segments_for_feedback(
+        self,
+        segments_dir: str,
+        session_id: str,
+        stop_event: asyncio.Event,
+        processed_segments: set
+    ):
+        """
+        Monitora diretório de segmentos e processa novos arquivos para análise PNL.
+        Executa em background durante a gravação.
+        """
+        segment_counter = 0
+        logger.info(f"🔍 Iniciando monitoramento de segmentos para PNL em: {segments_dir}")
+        
+        while not stop_event.is_set():
+            try:
+                # Buscar novos arquivos .ts no diretório
+                pattern = os.path.join(segments_dir, "*.ts")
+                segment_files = glob.glob(pattern)
+                
+                for segment_path in segment_files:
+                    segment_name = os.path.basename(segment_path)
+                    
+                    # Processar apenas segmentos novos e com tamanho mínimo
+                    if (segment_name not in processed_segments and 
+                        os.path.exists(segment_path) and
+                        os.path.getsize(segment_path) > 1024):  # Arquivo com pelo menos 1KB
+                        
+                        try:
+                            # Aguardar um pouco para garantir que o arquivo está completo
+                            await asyncio.sleep(2)
+                            
+                            # Verificar se ainda existe e tem tamanho adequado
+                            if not os.path.exists(segment_path) or os.path.getsize(segment_path) < 1024:
+                                continue
+                            
+                            # Extrair áudio do segmento .ts para análise PNL
+                            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
+                                temp_audio_path = temp_audio.name
+                            
+                            try:
+                                # Extrair áudio do segmento .ts usando FFmpeg
+                                cmd = [
+                                    "ffmpeg", "-i", segment_path,
+                                    "-vn",  # Sem vídeo
+                                    "-acodec", "pcm_s16le",  # Codec de áudio WAV
+                                    "-ar", "16000",  # Taxa de amostragem 16kHz
+                                    "-ac", "1",  # Mono
+                                    "-y",  # Sobrescrever arquivo
+                                    temp_audio_path
+                                ]
+                                
+                                result = subprocess.run(
+                                    cmd, 
+                                    capture_output=True, 
+                                    text=True, 
+                                    timeout=30
+                                )
+                                
+                                if result.returncode == 0 and os.path.exists(temp_audio_path):
+                                    # Verificar se o arquivo de áudio tem conteúdo
+                                    if os.path.getsize(temp_audio_path) > 1024:  # Pelo menos 1KB de áudio
+                                        # Ler arquivo de áudio extraído
+                                        with open(temp_audio_path, 'rb') as audio_file:
+                                            audio_data = audio_file.read()
+                                        
+                                        # Processar para análise PNL
+                                        analysis_result = await self.feedback_service.process_feedback_audio_with_context(
+                                            session_id, audio_data, "audio/wav"
+                                        )
+                                        
+                                        if analysis_result:
+                                            segment_counter += 1
+                                            logger.info(f"🧠 Análise PNL concluída para segmento {segment_counter}: {segment_name}")
+                                            
+                                            # Evento será propagado pelo generator principal via queue interna se necessário
+                                        
+                                        processed_segments.add(segment_name)
+                                    else:
+                                        logger.warning(f"⚠️ Áudio extraído muito pequeno para {segment_name}")
+                                else:
+                                    logger.error(f"❌ Falha na extração de áudio de {segment_name}: {result.stderr}")
+                            
+                            finally:
+                                # Remover arquivo temporário
+                                if os.path.exists(temp_audio_path):
+                                    os.unlink(temp_audio_path)
+                        
+                        except Exception as e:
+                            logger.error(f"❌ Erro ao processar segmento {segment_name} para análise PNL: {e}")
+                
+                # Aguardar antes da próxima verificação
+                await asyncio.sleep(10)  # Verificar a cada 10 segundos
+                
+            except Exception as e:
+                logger.error(f"❌ Erro no monitoramento de segmentos: {e}")
+                await asyncio.sleep(5)  # Aguardar um pouco antes de tentar novamente
+        
+        logger.info(f"✅ Monitoramento de segmentos finalizado. Total processados: {len(processed_segments)}")
 
 
 async def process_audio_for_feedback(
