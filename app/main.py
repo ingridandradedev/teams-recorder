@@ -8,10 +8,11 @@ import logging
 import time
 from datetime import datetime
 from typing import Dict, AsyncGenerator
-from fastapi import FastAPI, Query, Depends, HTTPException, Header, UploadFile, File
+from fastapi import FastAPI, Query, Depends, HTTPException, Header, UploadFile, File, Body
 from fastapi.responses import StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
+from pydantic import BaseModel
 
 # Importar módulos de gravação
 from app.async_recorder import gravar_reuniao_stream_async
@@ -26,12 +27,38 @@ from app.feedback_models import SessionInfo, SSEEvent
 # Importar novo serviço de transcrição de áudio
 from app.audio_transcription_service import AudioTranscriptionService
 
+# Importar serviço de persistência
+from app.supabase_persistence import get_persistence_service, cleanup_persistence_service
+
 # Configurar logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# === Modelos Pydantic ===
+
+class FeedbackSessionRequest(BaseModel):
+    """Modelo para request de início de sessão de feedback"""
+    meeting_session_id: str
+    teams_url: str
+    segment_time: int = 60
+    upload_dest: str = "recordings-segments"  
+    record_video: bool = True
+
+class FeedbackSessionResponse(BaseModel):
+    """Modelo para response de sessão de feedback"""
+    session_id: str
+    recording_session_id: str
+    status: str
+    type: str
+    teams_url: str
+    meeting_session_id: str
+    feedback_stream_url: str
+    stop_url: str
+    context_url: str
+    message: str
 
 # --- Configuração de Autenticação ---
 EXPECTED_API_TOKEN = os.getenv("API_TOKEN", "b3e59f8b8c4f48d09e0a0ff172b19a43d79ab69e165d0ec7037cbef967de2a3a")
@@ -104,6 +131,15 @@ async def lifespan(app: FastAPI):
             teams_recording_feedback = None
             audio_transcription_service = None
     
+    # Inicializar serviço de persistência Supabase
+    try:
+        persistence_service = await get_persistence_service()
+        logger.info("✅ Serviço de persistência Supabase inicializado")
+    except Exception as e:
+        logger.error(f"❌ Erro ao inicializar persistência Supabase: {e}")
+        # Não bloquear a aplicação se a persistência falhar
+        logger.warning("⚠️ Aplicação continuará sem persistência no banco de dados")
+    
     if EXPECTED_API_TOKEN == "b3e59f8b8c4f48d09e0a0ff172b19a43d79ab69e165d0ec7037cbef967de2a3a":
         logger.warning("⚠️ Usando token de API padrão! Configure API_TOKEN para produção.")
     
@@ -136,6 +172,13 @@ async def lifespan(app: FastAPI):
                 logger.info(f"⏹️ Sessão de feedback encerrada: {session_id[:8]}...")
             except Exception as e:
                 logger.error(f"❌ Erro ao encerrar sessão de feedback {session_id[:8]}: {e}")
+    
+    # Cleanup do serviço de persistência
+    try:
+        await cleanup_persistence_service()
+        logger.info("✅ Serviço de persistência Supabase finalizado")
+    except Exception as e:
+        logger.error(f"❌ Erro ao finalizar persistência: {e}")
     
     logger.info("✅ API encerrada com sucesso")
 
@@ -612,17 +655,15 @@ async def stream_transcription_data(recording_id: str):
 # NOVOS ENDPOINTS PARA FEEDBACK PNL INTEGRADO
 # =======================================
 
-@app.post("/api/feedback/start")
+@app.post("/api/feedback/start", response_model=FeedbackSessionResponse)
 async def start_feedback_session(
-    url: str = Query(..., description="URL da reunião do Teams"),
-    segment_time: int = Query(60, description="Segundos por segmento para análise de áudio"),
-    upload_dest: str = Query("recordings-segments", description="Pasta destino no bucket para segmentos"),
-    record_video: bool = Query(True, description="Se deve capturar vídeo além do áudio"),
+    request: FeedbackSessionRequest,
     api_key: str = Depends(verify_api_key)
 ):
     """
     Inicia uma nova sessão de feedback PNL integrada com gravação do Teams.
     Combina gravação automática do Teams com análise de feedback em tempo real.
+    Agora integrado com persistência no Supabase.
     """
     
     if not teams_feedback_service:
@@ -631,13 +672,43 @@ async def start_feedback_session(
             detail="Serviço de feedback PNL não está disponível. Verifique GEMINI_API_KEY."
         )
     
+    # Gerar IDs únicos
     session_id = str(uuid.uuid4())
     stop_event = asyncio.Event()
     
-    # Registrar a sessão
+    # Criar sessão no banco de dados
+    try:
+        persistence_service = await get_persistence_service()
+        recording_session_id = await persistence_service.create_recording_session(
+            meeting_session_id=request.meeting_session_id,
+            session_id=session_id,
+            teams_url=request.teams_url,
+            segment_time=request.segment_time,
+            record_video=request.record_video,
+            upload_dest=request.upload_dest
+        )
+        
+        if not recording_session_id:
+            raise HTTPException(
+                status_code=500,
+                detail="Erro ao criar sessão no banco de dados"
+            )
+            
+        logger.info(f"✅ Sessão criada no banco: recording_session_id={recording_session_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Erro na persistência: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao salvar sessão no banco: {str(e)}"
+        )
+    
+    # Registrar a sessão em memória
     STOP_EVENTS[session_id] = stop_event
     ACTIVE_RECORDINGS[session_id] = {
-        "url": url,
+        "url": request.teams_url,
+        "meeting_session_id": request.meeting_session_id,
+        "recording_session_id": recording_session_id,
         "started_at": asyncio.get_event_loop().time(),
         "status": "starting",
         "type": "feedback_pnl_with_teams_recording"
@@ -653,25 +724,109 @@ async def start_feedback_session(
         status="active"
     )
     
-    logger.info(f"🎬💬 Nova sessão de feedback PNL + gravação Teams iniciada: {session_id[:8]}...")
+    logger.info(f"🎬💬 Nova sessão de feedback PNL + gravação Teams iniciada: {session_id[:8]}... (meeting: {request.meeting_session_id})")
     
     # Iniciar gravação com feedback em background
     asyncio.create_task(
         execute_teams_recording_with_feedback(
-            session_id, url, stop_event, segment_time, upload_dest, record_video
+            session_id, request.teams_url, stop_event, 
+            request.segment_time, request.upload_dest, request.record_video,
+            request.meeting_session_id, recording_session_id
         )
     )
     
-    return {
-        "sessionId": session_id,
-        "status": "started",
-        "type": "feedback_pnl_with_teams_recording",
-        "teams_url": url,
-        "feedback_stream_url": f"/api/feedback/stream/{session_id}",
-        "stop_url": f"/api/feedback/session/{session_id}",
-        "context_url": f"/api/feedback/context/{session_id}",
-        "message": "Sessão de feedback PNL com gravação do Teams iniciada com sucesso"
-    }
+    return FeedbackSessionResponse(
+        session_id=session_id,
+        recording_session_id=recording_session_id,
+        status="started",
+        type="feedback_pnl_with_teams_recording",
+        teams_url=request.teams_url,
+        meeting_session_id=request.meeting_session_id,
+        feedback_stream_url=f"/api/feedback/stream/{session_id}",
+        stop_url=f"/api/feedback/session/{session_id}",
+        context_url=f"/api/feedback/context/{session_id}",
+        message="Sessão de feedback PNL com gravação do Teams iniciada com sucesso e persistida no banco"
+    )
+
+
+@app.get("/api/feedback/session/{session_id}/recording")
+async def get_recording_session_data(
+    session_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Retorna os dados da sessão de gravação armazenados no banco.
+    """
+    try:
+        persistence_service = await get_persistence_service()
+        
+        # Buscar dados da sessão no banco
+        recording_data = await persistence_service.get_recording_session_by_session_id(session_id)
+        
+        if not recording_data:
+            raise HTTPException(
+                status_code=404,
+                detail="Sessão de gravação não encontrada no banco"
+            )
+            
+        return {
+            "recording_session_id": recording_data.get("id"),
+            "meeting_session_id": recording_data.get("meeting_session_id"),
+            "session_id": recording_data.get("session_id"),
+            "teams_url": recording_data.get("teams_url"),
+            "status": recording_data.get("status"),
+            "feedback_context": recording_data.get("feedback_context"),
+            "recording_url": recording_data.get("recording_url"),
+            "public_url": recording_data.get("public_url"),
+            "total_segments": recording_data.get("total_segments"),
+            "metadata": recording_data.get("metadata"),
+            "created_at": recording_data.get("created_at"),
+            "updated_at": recording_data.get("updated_at")
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro ao buscar dados da sessão {session_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro interno ao buscar dados: {str(e)}"
+        )
+
+
+@app.get("/api/feedback/meeting/{meeting_session_id}/recordings")
+async def get_meeting_recordings(
+    meeting_session_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Retorna todas as gravações de feedback de uma reunião específica.
+    """
+    try:
+        persistence_service = await get_persistence_service()
+        
+        # Buscar todas as gravações da reunião
+        recordings = await persistence_service.get_recordings_by_meeting_session(meeting_session_id)
+        
+        if not recordings:
+            return {
+                "meeting_session_id": meeting_session_id,
+                "recordings": [],
+                "total": 0
+            }
+            
+        return {
+            "meeting_session_id": meeting_session_id,
+            "recordings": recordings,
+            "total": len(recordings)
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao buscar gravações da reunião {meeting_session_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro interno ao buscar gravações: {str(e)}"
+        )
 
 
 @app.post("/api/feedback/process-audio/{session_id}")
@@ -970,13 +1125,25 @@ async def execute_teams_recording_with_feedback(
     stop_event: asyncio.Event,
     segment_time: int,
     upload_dest: str,
-    record_video: bool
+    record_video: bool,
+    meeting_session_id: str,
+    recording_session_id: str
 ):
     """
     Executa a gravação do Teams com análise de feedback PNL em background.
     Esta função roda assincronamente e envia eventos via SSE.
+    Agora com persistência no Supabase.
     """
     try:
+        # Atualizar status no banco
+        try:
+            persistence_service = await get_persistence_service()
+            await persistence_service.update_recording_session_status(
+                recording_session_id, "recording"
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Erro ao atualizar status inicial: {e}")
+        
         # Inicia sessão de feedback no serviço
         feedback_session = teams_feedback_service.create_feedback_session(
             session_id=session_id,
@@ -990,7 +1157,9 @@ async def execute_teams_recording_with_feedback(
             data={
                 "session_id": session_id,
                 "teams_url": url,
-                "feedback_enabled": True
+                "feedback_enabled": True,
+                "meeting_session_id": meeting_session_id,
+                "recording_session_id": recording_session_id
             },
             message="Sessão de feedback PNL iniciada com gravação do Teams",
             timestamp=time.time()
@@ -1006,8 +1175,18 @@ async def execute_teams_recording_with_feedback(
             upload_dest=upload_dest,
             record_video=record_video
         ):
-            # Criar evento SSE a partir do evento de gravação/feedback
+            # Salvar contexto de feedback no banco se disponível
             if event.get("event") == "feedback_analysis":
+                try:
+                    analysis_data = event.get("analysis", {})
+                    if analysis_data:
+                        persistence_service = await get_persistence_service()
+                        await persistence_service.update_feedback_context(
+                            recording_session_id, analysis_data
+                        )
+                except Exception as e:
+                    logger.warning(f"⚠️ Erro ao salvar contexto de feedback: {e}")
+                    
                 feedback_event = SSEEvent(
                     type="feedback_analysis",
                     data=event.get("analysis"),
@@ -1015,6 +1194,18 @@ async def execute_teams_recording_with_feedback(
                     timestamp=time.time()
                 )
             elif event.get("event") == "feedback_final_recording":
+                # Salvar URL da gravação final no banco
+                try:
+                    persistence_service = await get_persistence_service()
+                    await persistence_service.save_final_recording(
+                        recording_session_id,
+                        event.get("file_url"),
+                        event.get("public_url", event.get("file_url")),
+                        event.get("total_segments", 0)
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ Erro ao salvar gravação final: {e}")
+                
                 # Evento especial para gravação final com link
                 feedback_event = SSEEvent(
                     type="final_recording_url",
@@ -1022,7 +1213,9 @@ async def execute_teams_recording_with_feedback(
                         "file_url": event.get("file_url"),
                         "public_url": event.get("public_url", event.get("file_url")),
                         "session_id": session_id,
-                        "total_segments": event.get("total_segments", 0)
+                        "total_segments": event.get("total_segments", 0),
+                        "meeting_session_id": meeting_session_id,
+                        "recording_session_id": recording_session_id
                     },
                     message=event.get("message", "Gravação finalizada"),
                     timestamp=time.time()
@@ -1051,12 +1244,23 @@ async def execute_teams_recording_with_feedback(
         final_session = teams_feedback_service.get_feedback_session(session_id)
         total_segments = final_session.total_chunks if final_session else 0
         
+        # Atualizar status final no banco
+        try:
+            persistence_service = await get_persistence_service()
+            await persistence_service.update_recording_session_status(
+                recording_session_id, "completed"
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Erro ao atualizar status final: {e}")
+        
         # Evento de conclusão
         complete_event = SSEEvent(
             type="feedback_recording_complete",
             data={
                 "session_id": session_id,
-                "total_segments": total_segments
+                "total_segments": total_segments,
+                "meeting_session_id": meeting_session_id,
+                "recording_session_id": recording_session_id
             },
             message="Gravação com análise de feedback PNL concluída",
             timestamp=time.time()
@@ -1065,6 +1269,15 @@ async def execute_teams_recording_with_feedback(
                 
     except Exception as e:
         logger.error(f"❌ Erro na execução de gravação com feedback {session_id[:8]}...: {e}")
+        
+        # Atualizar status de erro no banco
+        try:
+            persistence_service = await get_persistence_service()
+            await persistence_service.update_recording_session_status(
+                recording_session_id, "error"
+            )
+        except Exception as db_error:
+            logger.warning(f"⚠️ Erro ao atualizar status de erro: {db_error}")
         
         # Envia erro via SSE
         error_event = SSEEvent(
