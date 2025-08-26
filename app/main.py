@@ -174,6 +174,16 @@ async def verify_api_key(x_api_token: str = Header(None, description="Seu token 
         raise HTTPException(status_code=403, detail="Token da API inválido.")
     return x_api_token
 
+async def verify_api_key_query(api_key: str = Query(None, description="Seu token de API como query parameter")):
+    """
+    Dependência para verificar o token da API via query parameter (para EventSource).
+    """
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Query parameter api_key ausente.")
+    if api_key != EXPECTED_API_TOKEN:
+        raise HTTPException(status_code=403, detail="Token da API inválido.")
+    return api_key
+
 @app.get("/gravar", response_class=StreamingResponse)
 async def iniciar_gravacao(
     url: str = Query(..., description="URL da reunião do Teams"),
@@ -454,7 +464,7 @@ async def record_audio_and_transcribe_meeting(
 @app.get("/transcription-stream/{recording_id}", response_class=StreamingResponse)
 async def stream_transcricao(
     recording_id: str,
-    api_key: str = Depends(verify_api_key)
+    api_key: str = Depends(verify_api_key_query)
 ):
     """
     Stream de eventos de transcrição em tempo real para um recording_id específico.
@@ -761,7 +771,7 @@ async def process_feedback_audio(
 @app.get("/api/feedback/stream/{session_id}")
 async def stream_feedback_updates(
     session_id: str,
-    api_key: str = Depends(verify_api_key)
+    api_key: str = Depends(verify_api_key_query)
 ):
     """Stream SSE de atualizações da sessão de feedback PNL integrada"""
     
