@@ -357,8 +357,33 @@ async def record_audio_and_transcribe_meeting(
     
     # Verificar se serviço está disponível
     logger.info(f"🔍 Debug endpoint - audio_transcription_service: {audio_transcription_service is not None}")
+    
+    # Se o serviço não foi inicializado, tentar inicializar agora
     if not audio_transcription_service:
-        logger.error("🔍 Debug endpoint - Serviço de transcrição não está disponível")
+        logger.warning("🔍 Debug endpoint - Tentando inicializar serviço agora...")
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        logger.info(f"🔍 Debug endpoint - GEMINI_API_KEY presente: {bool(gemini_api_key)}")
+        
+        if gemini_api_key:
+            try:
+                global audio_transcription_service
+                audio_transcription_service = AudioTranscriptionService(gemini_api_key)
+                logger.info("✅ Debug endpoint - Serviço inicializado com sucesso")
+            except Exception as e:
+                logger.error(f"❌ Debug endpoint - Erro ao inicializar serviço: {e}")
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Erro ao inicializar serviço de transcrição: {str(e)}"
+                )
+        else:
+            logger.error("🔍 Debug endpoint - GEMINI_API_KEY não encontrada")
+            raise HTTPException(
+                status_code=400, 
+                detail="Serviço de transcrição de áudio não está disponível. GEMINI_API_KEY não configurada."
+            )
+    
+    if not audio_transcription_service:
+        logger.error("🔍 Debug endpoint - Serviço de transcrição ainda não está disponível")
         raise HTTPException(
             status_code=400, 
             detail="Serviço de transcrição de áudio não está disponível. Verifique GEMINI_API_KEY."
