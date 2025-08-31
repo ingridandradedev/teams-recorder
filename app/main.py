@@ -7,10 +7,11 @@ import json
 import logging
 import time
 from datetime import datetime
-from typing import Dict, AsyncGenerator
+from typing import Dict, AsyncGenerator, Optional, List
 from fastapi import FastAPI, Query, Depends, HTTPException, Header, UploadFile, File, Body
 from fastapi.responses import StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 
@@ -29,6 +30,13 @@ from app.audio_transcription_service import AudioTranscriptionService
 
 # Importar serviço de persistência
 from app.supabase_persistence import get_persistence_service, cleanup_persistence_service
+
+# Importar serviços Attendee
+from app.attendee_service import (
+    get_attendee_service, 
+    get_attendee_monitoring, 
+    cleanup_attendee_services
+)
 
 # Configurar logging
 logging.basicConfig(
@@ -59,6 +67,52 @@ class FeedbackSessionResponse(BaseModel):
     stop_url: str
     context_url: str
     message: str
+
+# === Novos Modelos para Attendee ===
+
+class AttendeeRecordingRequest(BaseModel):
+    """Modelo para request de gravação via Attendee"""
+    meeting_url: str
+    session_name: str
+    source_type: str = "live_recording"
+    event_id: Optional[str] = None
+    user_id: str
+    tenant_id: Optional[str] = None
+    metadata: Optional[dict] = None
+
+class AttendeeRecordingResponse(BaseModel):
+    """Modelo para response de gravação via Attendee"""
+    recording_session_id: str
+    meeting_session_id: str
+    attendee_bot_id: str
+    session_name: str
+    meeting_url: str
+    status: str
+    monitoring_active: bool
+    created_at: datetime
+    message: str
+
+class MeetingSessionMetadata(BaseModel):
+    """Modelo para metadados completos da sessão"""
+    recording_session_id: str
+    meeting_session_id: str
+    session_name: Optional[str]
+    meeting_url: str
+    status: str
+    attendee_bot_id: Optional[str]
+    attendee_bot_state: Optional[str]
+    attendee_recording_state: Optional[str]
+    attendee_transcription_state: Optional[str]
+    transcription_data: List[dict]
+    feedback_analysis: dict
+    speaker_data: List[dict]
+    final_recording_url: Optional[str]
+    calendar_event_title: Optional[str]
+    total_chunks: int
+    monitoring_active: bool
+    created_at: datetime
+    updated_at: datetime
+    ended_at: Optional[datetime]
 
 # --- Configuração de Autenticação ---
 EXPECTED_API_TOKEN = os.getenv("API_TOKEN", "b3e59f8b8c4f48d09e0a0ff172b19a43d79ab69e165d0ec7037cbef967de2a3a")
@@ -140,6 +194,18 @@ async def lifespan(app: FastAPI):
         # Não bloquear a aplicação se a persistência falhar
         logger.warning("⚠️ Aplicação continuará sem persistência no banco de dados")
     
+    # Inicializar serviços Attendee se configurados
+    attendee_api_key = os.getenv("ATTENDEE_API_KEY")
+    if attendee_api_key:
+        try:
+            await get_attendee_service()
+            await get_attendee_monitoring()
+            logger.info("✅ Serviços Attendee inicializados com sucesso")
+        except Exception as e:
+            logger.error(f"❌ Erro ao inicializar serviços Attendee: {e}")
+    else:
+        logger.warning("⚠️ ATTENDEE_API_KEY não configurada! Funcionalidades Attendee indisponíveis.")
+    
     if EXPECTED_API_TOKEN == "b3e59f8b8c4f48d09e0a0ff172b19a43d79ab69e165d0ec7037cbef967de2a3a":
         logger.warning("⚠️ Usando token de API padrão! Configure API_TOKEN para produção.")
     
@@ -173,6 +239,13 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.error(f"❌ Erro ao encerrar sessão de feedback {session_id[:8]}: {e}")
     
+    # Cleanup dos serviços Attendee
+    try:
+        await cleanup_attendee_services()
+        logger.info("✅ Serviços Attendee finalizados")
+    except Exception as e:
+        logger.error(f"❌ Erro ao finalizar serviços Attendee: {e}")
+    
     # Cleanup do serviço de persistência
     try:
         await cleanup_persistence_service()
@@ -187,6 +260,15 @@ app = FastAPI(
     description="API para gravação de reuniões do Microsoft Teams com suporte a múltiplas gravações simultâneas, transcrição e análise de feedback PNL em tempo real",
     version="2.3.0",
     lifespan=lifespan
+)
+
+# Configurar CORS para resolver problemas de preflight
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Em produção, especifique domínios
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Configurar arquivos estáticos
@@ -1308,6 +1390,212 @@ async def execute_teams_recording_with_feedback(
         STOP_EVENTS.pop(session_id, None)
         ACTIVE_RECORDINGS.pop(session_id, None)
         logger.info(f"🧹 Gravação com feedback {session_id[:8]}... finalizada | Total ativo: {len(ACTIVE_RECORDINGS)}")
+
+
+# =======================================
+# NOVOS ENDPOINTS PARA INTEGRAÇÃO ATTENDEE
+# =======================================
+
+@app.post("/api/attendee/start-recording", response_model=AttendeeRecordingResponse)
+async def start_attendee_recording(
+    request: AttendeeRecordingRequest,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Inicia gravação de reunião usando a API do Attendee.
+    
+    Este endpoint:
+    1. Cria uma meeting_session no banco
+    2. Cria um bot no Attendee
+    3. Cria uma recording_session vinculada
+    4. Inicia monitoramento em background
+    """
+    try:
+        # Obter serviços necessários
+        attendee_service = await get_attendee_service()
+        attendee_monitoring = await get_attendee_monitoring()
+        persistence = await get_persistence_service()
+        
+        # Gerar IDs únicos
+        meeting_session_id = str(uuid.uuid4())
+        recording_session_id = str(uuid.uuid4())
+        
+        # Criar meeting_session no banco
+        try:
+            async with persistence.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO meeting_sessions (
+                        id, user_id, tenant_id, calendar_event_id, 
+                        source_type, status, session_name, metadata
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    """,
+                    meeting_session_id,
+                    request.user_id,
+                    request.tenant_id,
+                    request.event_id if request.event_id else None,
+                    request.source_type,
+                    'processing',
+                    request.session_name,
+                    json.dumps(request.metadata or {})
+                )
+                
+                logger.info(f"✅ Meeting session criada: {meeting_session_id}")
+        except Exception as e:
+            logger.error(f"❌ Erro ao criar meeting_session: {e}")
+            raise HTTPException(status_code=500, detail="Erro ao criar sessão de reunião")
+        
+        # Criar bot no Attendee
+        bot_metadata = {
+            "meeting_session_id": meeting_session_id,
+            "recording_session_id": recording_session_id,
+            "session_name": request.session_name,
+            "source_type": request.source_type
+        }
+        
+        bot_data = await attendee_service.create_bot(
+            meeting_url=request.meeting_url,
+            bot_name=f"MarIA Bot - {request.session_name}",
+            metadata=bot_metadata
+        )
+        
+        if not bot_data:
+            # Limpar meeting_session criada
+            try:
+                async with persistence.pool.acquire() as conn:
+                    await conn.execute(
+                        "DELETE FROM meeting_sessions WHERE id = $1",
+                        meeting_session_id
+                    )
+            except:
+                pass
+            raise HTTPException(status_code=500, detail="Erro ao criar bot no Attendee")
+        
+        attendee_bot_id = bot_data["id"]
+        
+        # Criar recording_session no banco
+        recording_session_uuid = await persistence.create_attendee_recording_session(
+            meeting_session_id=meeting_session_id,
+            session_id=recording_session_id,
+            attendee_meeting_url=request.meeting_url,
+            attendee_bot_id=attendee_bot_id,
+            session_name=request.session_name,
+            metadata=bot_metadata
+        )
+        
+        if not recording_session_uuid:
+            raise HTTPException(status_code=500, detail="Erro ao criar sessão de gravação")
+        
+        # Iniciar monitoramento em background
+        await attendee_monitoring.start_monitoring(recording_session_uuid, attendee_bot_id)
+        
+        logger.info(f"🤖 Gravação Attendee iniciada: bot={attendee_bot_id}, session={request.session_name}")
+        
+        return AttendeeRecordingResponse(
+            recording_session_id=recording_session_uuid,
+            meeting_session_id=meeting_session_id,
+            attendee_bot_id=attendee_bot_id,
+            session_name=request.session_name,
+            meeting_url=request.meeting_url,
+            status="active",
+            monitoring_active=True,
+            created_at=datetime.now(),
+            message=f"Gravação iniciada com sucesso. Bot ID: {attendee_bot_id}"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro inesperado ao iniciar gravação Attendee: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
+
+
+@app.get("/api/attendee/meeting-metadata/{recording_session_id}", response_model=MeetingSessionMetadata)
+async def get_meeting_metadata(
+    recording_session_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Recupera metadados completos de uma sessão de reunião.
+    
+    Retorna:
+    - Status atual da gravação e bot
+    - Transcrições com timestamps
+    - Análise de feedback gerada
+    - URL da gravação (quando disponível)
+    - Informações dos falantes
+    """
+    try:
+        persistence = await get_persistence_service()
+        
+        # Buscar metadados completos
+        metadata = await persistence.get_meeting_session_metadata(recording_session_id)
+        
+        if not metadata:
+            raise HTTPException(status_code=404, detail="Sessão de reunião não encontrada")
+        
+        # Formatar resposta
+        return MeetingSessionMetadata(
+            recording_session_id=str(metadata["id"]),
+            meeting_session_id=str(metadata["meeting_session_id"]),
+            session_name=metadata.get("meeting_session_name"),
+            meeting_url=metadata.get("attendee_meeting_url") or metadata.get("teams_url"),
+            status=metadata["status"],
+            attendee_bot_id=metadata.get("attendee_bot_id"),
+            attendee_bot_state=metadata.get("attendee_bot_state"),
+            attendee_recording_state=metadata.get("attendee_recording_state"),
+            attendee_transcription_state=metadata.get("attendee_transcription_state"),
+            transcription_data=metadata.get("transcription_data", []),
+            feedback_analysis=metadata.get("feedback_analysis", {}),
+            speaker_data=metadata.get("speaker_data", []),
+            final_recording_url=metadata.get("final_recording_url"),
+            calendar_event_title=metadata.get("calendar_event_title"),
+            total_chunks=metadata.get("total_chunks", 0),
+            monitoring_active=metadata.get("bot_monitoring_active", False),
+            created_at=metadata["created_at"],
+            updated_at=metadata["updated_at"],
+            ended_at=metadata.get("ended_at")
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro ao buscar metadados da reunião: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
+
+
+@app.post("/api/attendee/stop-recording/{recording_session_id}")
+async def stop_attendee_recording(
+    recording_session_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Para monitoramento de uma gravação Attendee específica.
+    
+    Note: Isso apenas para o monitoramento local. O bot do Attendee
+    continua gravando até que a reunião termine naturalmente.
+    """
+    try:
+        attendee_monitoring = await get_attendee_monitoring()
+        
+        # Parar monitoramento
+        await attendee_monitoring.stop_monitoring(recording_session_id)
+        
+        # Atualizar status no banco
+        persistence = await get_persistence_service()
+        await persistence.update_recording_session_status(recording_session_id, "cancelled")
+        
+        logger.info(f"⏹️ Monitoramento Attendee parado: {recording_session_id}")
+        
+        return {
+            "message": "Monitoramento parado com sucesso",
+            "recording_session_id": recording_session_id,
+            "status": "cancelled"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao parar monitoramento Attendee: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
 
 
 if __name__ == "__main__":

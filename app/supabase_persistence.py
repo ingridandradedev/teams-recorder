@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import json
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 import asyncpg
 from app.feedback_models import ConversationContext, FeedbackSession
@@ -516,6 +516,339 @@ class SupabasePersistenceService:
         except Exception as e:
             logger.error(f"❌ Erro ao buscar sessões ativas: {e}")
             return []
+
+    # =======================================
+    # MÉTODOS PARA INTEGRAÇÃO COM ATTENDEE
+    # =======================================
+    
+    async def create_attendee_recording_session(
+        self,
+        meeting_session_id: str,
+        session_id: str,
+        attendee_meeting_url: str,
+        attendee_bot_id: str,
+        session_name: str = None,
+        metadata: Dict[str, Any] = None
+    ) -> Optional[str]:
+        """
+        Cria sessão de gravação com integração Attendee.
+        
+        Args:
+            meeting_session_id: ID da sessão de reunião
+            session_id: ID único da sessão
+            attendee_meeting_url: URL da reunião no Attendee
+            attendee_bot_id: ID do bot criado no Attendee
+            session_name: Nome da sessão
+            metadata: Metadados adicionais
+        
+        Returns:
+            ID da recording_session criada ou None se falhou
+        """
+        try:
+            if not self.pool:
+                await self.initialize_pool()
+            
+            async with self.pool.acquire() as conn:
+                recording_id = await conn.fetchval(
+                    """
+                    INSERT INTO recording_sessions (
+                        meeting_session_id, session_id, teams_url,
+                        source_type, status, attendee_bot_id, 
+                        attendee_meeting_url, bot_monitoring_active,
+                        attendee_metadata, recording_metadata
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    RETURNING id
+                    """,
+                    meeting_session_id, session_id, attendee_meeting_url,
+                    'attendee_bot', 'active', attendee_bot_id,
+                    attendee_meeting_url, True,
+                    json.dumps(metadata or {}), '{}'
+                )
+                
+                logger.info(f"✅ Sessão Attendee criada: {recording_id} (bot: {attendee_bot_id})")
+                return str(recording_id)
+                
+        except Exception as e:
+            logger.error(f"❌ Erro ao criar sessão Attendee: {e}")
+            return None
+    
+    async def update_attendee_bot_status(
+        self,
+        recording_session_id: str,
+        bot_state: str = None,
+        recording_state: str = None,
+        transcription_state: str = None,
+        metadata: Dict[str, Any] = None
+    ) -> bool:
+        """
+        Atualiza status do bot Attendee.
+        
+        Args:
+            recording_session_id: ID da recording_session
+            bot_state: Estado do bot (ready, joining, joined_recording, etc.)
+            recording_state: Estado da gravação
+            transcription_state: Estado da transcrição
+            metadata: Metadados do bot
+        
+        Returns:
+            True se atualizou com sucesso
+        """
+        try:
+            if not self.pool:
+                await self.initialize_pool()
+            
+            async with self.pool.acquire() as conn:
+                update_fields = ["updated_at = now()"]
+                params = []
+                param_count = 1
+                
+                if bot_state:
+                    update_fields.append(f"attendee_bot_state = ${param_count}")
+                    params.append(bot_state)
+                    param_count += 1
+                
+                if recording_state:
+                    update_fields.append(f"attendee_recording_state = ${param_count}")
+                    params.append(recording_state)
+                    param_count += 1
+                
+                if transcription_state:
+                    update_fields.append(f"attendee_transcription_state = ${param_count}")
+                    params.append(transcription_state)
+                    param_count += 1
+                
+                if metadata:
+                    update_fields.append(f"attendee_metadata = ${param_count}")
+                    params.append(json.dumps(metadata))
+                    param_count += 1
+                
+                params.append(recording_session_id)
+                
+                query = f"""
+                    UPDATE recording_sessions 
+                    SET {', '.join(update_fields)}
+                    WHERE id = ${param_count}
+                """
+                
+                result = await conn.execute(query, *params)
+                
+                if result == "UPDATE 1":
+                    logger.debug(f"✅ Status Attendee atualizado para recording_session {recording_session_id}")
+                    return True
+                else:
+                    logger.warning(f"⚠️ Nenhuma sessão encontrada para atualizar status: {recording_session_id}")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"❌ Erro ao atualizar status Attendee: {e}")
+            return False
+    
+    async def update_transcript_and_feedback(
+        self,
+        recording_session_id: str,
+        transcript_data: List[Dict] = None,
+        feedback_analysis: Dict[str, Any] = None
+    ) -> bool:
+        """
+        Atualiza transcrição e análise de feedback.
+        
+        Args:
+            recording_session_id: ID da recording_session
+            transcript_data: Novos dados de transcrição
+            feedback_analysis: Análise de feedback gerada
+        
+        Returns:
+            True se atualizou com sucesso
+        """
+        try:
+            if not self.pool:
+                await self.initialize_pool()
+            
+            async with self.pool.acquire() as conn:
+                # Buscar dados atuais
+                current_data = await conn.fetchrow(
+                    """
+                    SELECT transcription_data, feedback_analysis, total_chunks 
+                    FROM recording_sessions 
+                    WHERE id = $1
+                    """,
+                    recording_session_id
+                )
+                
+                if not current_data:
+                    logger.warning(f"⚠️ Sessão não encontrada: {recording_session_id}")
+                    return False
+                
+                # Mesclar novos dados de transcrição
+                current_transcript = current_data['transcription_data'] or []
+                if transcript_data:
+                    # Adicionar novos segmentos (evitar duplicatas por timestamp)
+                    existing_timestamps = {item.get('timestamp_ms') for item in current_transcript}
+                    new_segments = [
+                        item for item in transcript_data 
+                        if item.get('timestamp_ms') not in existing_timestamps
+                    ]
+                    current_transcript.extend(new_segments)
+                
+                # Atualizar análise de feedback
+                current_feedback = current_data['feedback_analysis'] or {}
+                if feedback_analysis:
+                    current_feedback.update(feedback_analysis)
+                
+                # Calcular total de chunks
+                total_chunks = len(current_transcript)
+                
+                # Atualizar banco
+                await conn.execute(
+                    """
+                    UPDATE recording_sessions 
+                    SET 
+                        transcription_data = $1,
+                        feedback_analysis = $2,
+                        total_chunks = $3,
+                        last_transcript_check_at = now(),
+                        updated_at = now()
+                    WHERE id = $4
+                    """,
+                    json.dumps(current_transcript),
+                    json.dumps(current_feedback),
+                    total_chunks,
+                    recording_session_id
+                )
+                
+                logger.info(f"✅ Transcrição/feedback atualizado: {recording_session_id} ({total_chunks} segmentos)")
+                return True
+                
+        except Exception as e:
+            logger.error(f"❌ Erro ao atualizar transcrição/feedback: {e}")
+            return False
+    
+    async def update_final_recording_url(
+        self,
+        recording_session_id: str,
+        recording_url: str,
+        recording_metadata: Dict[str, Any] = None
+    ) -> bool:
+        """
+        Atualiza URL final de gravação do Attendee.
+        
+        Args:
+            recording_session_id: ID da recording_session
+            recording_url: URL da gravação
+            recording_metadata: Metadados da gravação
+        
+        Returns:
+            True se atualizou com sucesso
+        """
+        try:
+            if not self.pool:
+                await self.initialize_pool()
+            
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE recording_sessions 
+                    SET 
+                        final_recording_url = $1,
+                        recording_metadata = $2,
+                        updated_at = now()
+                    WHERE id = $3
+                    """,
+                    recording_url,
+                    json.dumps(recording_metadata or {}),
+                    recording_session_id
+                )
+                
+                logger.info(f"✅ URL de gravação final atualizada: {recording_session_id}")
+                return True
+                
+        except Exception as e:
+            logger.error(f"❌ Erro ao atualizar URL de gravação final: {e}")
+            return False
+    
+    async def finalize_attendee_recording(self, recording_session_id: str) -> bool:
+        """
+        Finaliza sessão de gravação Attendee.
+        
+        Args:
+            recording_session_id: ID da recording_session
+        
+        Returns:
+            True se finalizou com sucesso
+        """
+        try:
+            if not self.pool:
+                await self.initialize_pool()
+            
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE recording_sessions 
+                    SET 
+                        status = 'completed',
+                        bot_monitoring_active = false,
+                        ended_at = now(),
+                        updated_at = now()
+                    WHERE id = $1
+                    """,
+                    recording_session_id
+                )
+                
+                logger.info(f"✅ Sessão Attendee finalizada: {recording_session_id}")
+                return True
+                
+        except Exception as e:
+            logger.error(f"❌ Erro ao finalizar sessão Attendee: {e}")
+            return False
+    
+    async def get_meeting_session_metadata(self, recording_session_id: str) -> Optional[Dict]:
+        """
+        Recupera metadados completos de uma sessão de reunião.
+        
+        Args:
+            recording_session_id: ID da recording_session
+        
+        Returns:
+            Dicionário com todos os metadados ou None se não encontrada
+        """
+        try:
+            if not self.pool:
+                await self.initialize_pool()
+            
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT 
+                        rs.*,
+                        ms.session_name as meeting_session_name,
+                        ms.user_id,
+                        ms.metadata as meeting_metadata,
+                        ce.title as calendar_event_title
+                    FROM recording_sessions rs
+                    JOIN meeting_sessions ms ON rs.meeting_session_id = ms.id
+                    LEFT JOIN calendar_events ce ON ms.calendar_event_id = ce.id
+                    WHERE rs.id = $1
+                    """,
+                    recording_session_id
+                )
+                
+                if row:
+                    result = dict(row)
+                    # Parsear campos JSON
+                    for field in ['transcription_data', 'feedback_analysis', 'attendee_metadata', 'recording_metadata']:
+                        if result.get(field):
+                            try:
+                                result[field] = json.loads(result[field])
+                            except json.JSONDecodeError:
+                                result[field] = {}
+                    
+                    return result
+                else:
+                    return None
+                    
+        except Exception as e:
+            logger.error(f"❌ Erro ao buscar metadados da sessão: {e}")
+            return None
 
 
 # Instância global do serviço
